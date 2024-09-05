@@ -1,0 +1,38 @@
+[package]
+name = "CCBPlusTree"
+version = "0.0.118"
+edition = "2021"
+authors = ["Amir El-Shaikh <elshaikh@mathematik.uni-marburg.de>"]
+description = "Experimental Concurrency Control CRUD B+Tree Implementation"
+repository = "https://github.com/umr-dbs/CC-BPlusTree"
+
+[lib]
+name = "cc_bplustree"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
+
+[profile.dev]
+overflow-checks = false
+
+[profile.release]
+overflow-checks = false
+
+[features]
+olc-hle = []
+orwc-fair = []
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+hashbrown = "0.14.5"
+crossbeam = "0.8.4"
+chrono = "0.4.38"
+rand = "0.8.5"
+num_cpus = "1.16.0"
+itertools = "0.13.0"
+parking_lot = { version = "0.12.3", features = ["hardware-lock-elision"] }
+serde = { version ="1.0.204", features = ["derive", "rc"] }
+serde_json = { version = "1.0.120" }
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2.155"
+sysinfo = "0.30.13"
+raw-cpuid = "11.1.0"
