@@ -1,7 +1,9 @@
 use std::cell::Cell;
-use std::{ptr, slice};
+use std::{mem, ptr, slice};
+use std::ops::Deref;
 use std::ptr::slice_from_raw_parts_mut;
 use crate::page_model::ObjectCount;
+use crate::record_model::Version;
 
 pub struct ShadowVec<E: Default + Clone> {
     pub(crate) ptr: *mut E,
@@ -144,3 +146,171 @@ impl<E: Default + Clone> Drop for ShadowVec<E> {
         }
     }
 }
+
+#[derive(Clone, Default)]
+pub struct VersionList<Payload: Clone + Default>(VEntryPayload<Payload>);
+
+unsafe impl<Payload: Clone + Default> Sync for VersionList<Payload> {}
+
+impl<Payload: Clone + Default> Deref for VersionList<Payload> {
+    type Target = VEntryPayload<Payload>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl<Payload: Clone + Default> VersionList<Payload> {
+    #[inline(always)]
+    pub const fn new(version: Version, payload: Payload) -> Self {
+        Self(VEntryPayload {
+            entry: VTuple {
+                version,
+                del_version: Version::MAX,
+                payload,
+            },
+            next: None
+        })
+    }
+
+    #[inline(always)]
+    pub fn is_live(&self) -> bool {
+        self.del_version == Version::MAX
+    }
+
+    #[inline(always)]
+    pub fn newest_payload(&self) -> Payload {
+        self.0.entry.payload.clone()
+    }
+
+    #[inline(always)]
+    pub fn newest_version(&self) -> Version {
+        self.0.entry.version
+    }
+
+    pub fn oldest_payload(&self) -> Payload {
+        let mut curr
+            = &self.0;
+
+        while let Some(ref next) = curr.next {
+            curr = next;
+        }
+
+        curr.entry.payload.clone()
+    }
+
+    pub fn find(&self, version: Version) -> Option<&VEntryPayload<Payload>> {
+        let mut curr
+            = &self.0;
+
+        while curr.entry.version > version {
+            curr = curr.next.as_deref()?;
+        }
+
+        if curr.entry.del_version > version {
+            Some(&curr)
+        }
+        else {
+            None
+        }
+    }
+
+    #[inline(always)]
+    pub fn delete(&mut self, del_version: Version) -> Option<Payload> {
+        self.delete_internal(self.newest_version(), del_version)
+    }
+
+    #[inline(always)]
+    fn delete_internal(&mut self, version: Version, del_version: Version) -> Option<Payload> {
+        if self.entry.version > version && self.entry.del_version > del_version {
+            self.0.entry.del_version = del_version;
+            Some(self.entry.payload.clone())
+        }
+        else {
+            None
+        }
+    }
+
+    pub fn find_mut(&mut self, version: Version) -> Option<&mut VEntryPayload<Payload>> {
+        let mut curr
+            = &mut self.0;
+
+        while curr.entry.version > version {
+            curr = curr.next.as_deref_mut()?;
+        }
+
+        if curr.entry.del_version > version {
+            Some(curr)
+        }
+        else {
+            None
+        }
+    }
+
+    pub fn append(&mut self, version: Version, payload: Payload) -> Payload {
+        let old_self = Box::new(mem::replace(&mut self.0, VEntryPayload {
+            entry: VTuple {
+                version,
+                del_version: Version::MAX,
+                payload,
+            },
+            next: None
+        }));
+
+        let old_payload = old_self
+            .payload()
+            .clone();
+
+        self.0.next = Some(old_self);
+
+        old_payload
+    }
+
+    pub fn len(&self) -> usize {
+        let mut len
+            = 1;
+
+        let mut curr
+            = self.0.next.as_deref();
+
+        while let Some(next) = curr {
+            curr = next.next.as_deref();
+            len += 1;
+        }
+
+        len
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct VEntryPayload<Payload: Clone + Default>  {
+    pub entry: VTuple<Payload>,
+    next: Option<Box<VEntryPayload<Payload>>>
+}
+
+impl<Payload: Clone + Default> Deref for VEntryPayload<Payload> {
+    type Target = VTuple<Payload>;
+    fn deref(&self) -> &Self::Target {
+        &self.entry
+    }
+}
+
+#[derive(Clone, Default)]
+pub struct VTuple<Payload: Clone + Default> {
+    version: Version,
+    pub del_version: Version,
+    payload: Payload
+}
+
+impl<Payload: Clone + Default>  VTuple<Payload> {
+    pub fn payload(&self) -> &Payload {
+        &self.payload
+    }
+}
+impl<Payload: Clone + Default> Deref for VTuple<Payload> {
+    type Target = Payload;
+    fn deref(&self) -> &Self::Target {
+        &self.payload
+    }
+}
+
+const DEL_VERSION_FLAG: Version = 1 << 63;

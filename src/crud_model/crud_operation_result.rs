@@ -2,6 +2,7 @@ use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use crate::record_model::record_point::RecordPoint;
 use crate::crud_model::crud_operation_result::CRUDOperationResult::{Deleted, Inserted, MatchedRecord, MatchedRecords, Updated};
+use crate::record_model::Version;
 
 /// Defines possible Transaction execution result.
 /// *Error*, indicates execution error.
@@ -15,9 +16,9 @@ use crate::crud_model::crud_operation_result::CRUDOperationResult::{Deleted, Ins
 pub enum CRUDOperationResult<Key: Ord + Hash + Copy + Default, Payload: Clone + Default> {
     MatchedRecords(Vec<RecordPoint<Key, Payload>>),
     MatchedRecord(Option<RecordPoint<Key, Payload>>),
-    Inserted(Key),
-    Updated(Key, Payload),
-    Deleted(Key, Payload),
+    Inserted(Key, Version),
+    Updated(Key, Payload, Version),
+    Deleted(Key, Payload, Version),
 
     #[default]
     Error, // flatten no good
@@ -41,17 +42,19 @@ impl<Key: Display + Ord + Hash + Copy + Default, Payload: Display + Clone + Defa
                 });
                 write!(f, "]")
             }
-            Inserted(key) =>
-                write!(f, "Inserted(key: {})",
-                       key),
-            Updated(key, payload) =>
-                write!(f, "Updated(key: {}, payload: {})",
+            Inserted(key, version) =>
+                write!(f, "Inserted(key: {}, version: {})",
+                       key, version),
+            Updated(key, payload, version) =>
+                write!(f, "Updated(key: {}, payload: {}, version: {})",
                        key,
-                       payload),
-            Deleted(key, payload) =>
-                write!(f, "Deleted(key: {}, version: {})",
+                       payload,
+                version),
+            Deleted(key, payload, version) =>
+                write!(f, "Deleted(key: {}, payload: {}, version: {})",
                        key,
-                       payload),
+                       payload,
+                       version),
 
         }
     }

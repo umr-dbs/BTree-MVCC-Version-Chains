@@ -23,7 +23,7 @@ use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::locking::locking_strategy::LockingStrategy::{LockCoupling, MonoWriter};
 use crate::page_model::node::Node;
-
+use crate::record_model::Version;
 use crate::tree::bplus_tree::BPlusTree;
 
 use crate::utils::interval::Interval;
@@ -556,14 +556,14 @@ fn mixed_test_new(
                             let key1 = key.sub(rq_offset);
                             CRUDOperation::Range(Interval::new(
                                 key1,
-                                key))
+                                key), Version::MAX)
                         }
                         Some(key1) => CRUDOperation::Range(Interval::new(
                             key,
-                            key1))
+                            key1), Version::MAX)
                     }
                 } else {
-                    CRUDOperation::Point(key)
+                    CRUDOperation::Point(key, Version::MAX)
                 }
             }
         })

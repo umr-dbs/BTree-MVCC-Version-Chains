@@ -1,13 +1,13 @@
 [package]
-name = "CCBPlusTree"
+name = "MVCCBPlusTree"
 version = "0.0.118"
 edition = "2021"
 authors = ["Amir El-Shaikh <elshaikh@mathematik.uni-marburg.de>"]
-description = "Experimental Concurrency Control CRUD B+Tree Implementation"
-repository = "https://github.com/umr-dbs/CC-BPlusTree"
+description = "Experimental Concurrency Control CRUD MVB+Tree Implementation"
+repository = "https://github.com/umr-dbs/MVCCBPlusTree"
 
 [lib]
-name = "cc_bplustree"
+name = "mvcc_bplustree"
 path = "src/lib.rs"
 crate-type = ["cdylib"]
 

@@ -10,8 +10,10 @@ use crate::record_model::record_point::RecordPoint;
 use crate::record_model::unsafe_clone::UnsafeClone;
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
+use crate::record_model::Version;
 use crate::tree::bplus_tree::{BPlusTree, INIT_TREE_HEIGHT, LockLevel, MAX_TREE_HEIGHT};
 use crate::utils::interval::Interval;
+use crate::utils::shadow_vec::VEntryPayload;
 use crate::utils::smart_cell::sched_yield;
 
 impl<const FAN_OUT: usize,
@@ -44,6 +46,7 @@ impl<const FAN_OUT: usize,
     pub(crate) fn range_query_olc(&self,
                                   path: &mut Vec<(Interval<Key>, BlockGuard<'static, FAN_OUT, NUM_RECORDS, Key, Payload>)>,
                                   org_key_interval: Interval<Key>,
+                                  version: Version,
                                   mut node_visits: NodeVisits
     ) -> (NodeVisits, CRUDOperationResult<Key, Payload>)
     {
@@ -60,7 +63,7 @@ impl<const FAN_OUT: usize,
             history_path.push_back(path.to_vec());
 
             let (visits, local_results) =
-                self.range_query_leaf_results(path, &key_interval);
+                self.range_query_leaf_results(path, &key_interval, version);
 
             node_visits += visits;
 
@@ -77,7 +80,7 @@ impl<const FAN_OUT: usize,
 
                         *path = Vec::with_capacity(0);
                         let (visits, retry)
-                            = self.dispatch(CRUDOperation::Range(org_key_interval));
+                            = self.dispatch(CRUDOperation::Range(org_key_interval, version));
 
                         return (visits + node_visits, retry)
                     }
@@ -229,7 +232,8 @@ impl<const FAN_OUT: usize,
     #[inline(always)]
     fn range_query_leaf_results(&self,
                                 path: &mut Vec<(Interval<Key>, BlockGuard<'static, FAN_OUT, NUM_RECORDS, Key, Payload>)>,
-                                key_interval: &Interval<Key>)
+                                key_interval: &Interval<Key>,
+                                version: Version)
                                 -> (NodeVisits, Vec<RecordPoint<Key, Payload>>)
     {
         let mut node_visits
@@ -250,9 +254,14 @@ impl<const FAN_OUT: usize,
                         let mut potential_results = leaf_page
                             .as_records()
                             .iter()
-                            .skip_while(|record| record.key().lt(&key_interval.lower()))
-                            .take_while(|record| record.key().le(&key_interval.upper()))
-                            .map(|record| record.unsafe_clone())
+                            .skip_while(|v_record| v_record.key().lt(&key_interval.lower()))
+                            .take_while(|v_record| v_record.key().le(&key_interval.upper()))
+                            .filter_map(|v_record|
+                                match v_record.find(version) {
+                                    Some(v_entry) =>
+                                        Some(RecordPoint::new(v_record.key(), v_entry.payload().clone())),
+                                    _ => None
+                                })
                             .collect::<Vec<_>>();
 
                         let (read, n_current_read_version)

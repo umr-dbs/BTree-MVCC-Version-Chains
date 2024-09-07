@@ -50,6 +50,7 @@ use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::locking::locking_strategy::{hybrid_lock_attempts, LHL_read_write, LockingStrategy, orwc, orwc_attempts};
 use crate::record_model::record_point::RecordPoint;
+use crate::record_model::Version;
 use crate::test::{INDEX, MAKE_INDEX};
 use crate::utils::interval::Interval;
 
@@ -57,7 +58,7 @@ impl BTreeApiExport {
     #[inline(always)]
     fn find(&self, key: *const u8, _sz: usize, value_out: *mut u8) -> bool {
         match self.dispatch(CRUDOperation::Point(
-            unsafe { ptr::read(mem::transmute(key)) }))
+            unsafe { ptr::read(mem::transmute(key)) }, Version::MAX))
         {
             (.., CRUDOperationResult::MatchedRecord(Some(result)))
              => unsafe {
@@ -126,7 +127,7 @@ impl BTreeApiExport {
         let key_start = unsafe { *(key as *const u64) };
         let key_end = key_start + scan_sz as u64 - 1;
 
-        match self.dispatch(CRUDOperation::Range(Interval::new(key_start, key_end))) {
+        match self.dispatch(CRUDOperation::Range(Interval::new(key_start, key_end), Version::MAX)) {
             (.., CRUDOperationResult::MatchedRecords(mut buff)) if !buff.is_empty() => unsafe {
                 buff.shrink_to_fit();
 

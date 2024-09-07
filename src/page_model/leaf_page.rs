@@ -5,8 +5,9 @@ use std::mem;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use crate::page_model::ObjectCount;
 use crate::record_model::record_point::RecordPoint;
+use crate::record_model::v_record_point::VersionedRecordPoint;
 use crate::utils::safe_cell::SafeCell;
-use crate::utils::shadow_vec::ShadowVec;
+use crate::utils::shadow_vec::{ShadowVec, VersionList};
 
 pub struct LeafPage<
     const NUM_RECORDS: usize,
@@ -14,7 +15,7 @@ pub struct LeafPage<
     Payload: Clone + Default,
 > {
     pub(crate) records_len: SafeCell<ObjectCount>,
-    pub(crate) record_data: [MaybeUninit<RecordPoint<Key, Payload>>; NUM_RECORDS],
+    pub(crate) record_data: [MaybeUninit<VersionedRecordPoint<Key, Payload>>; NUM_RECORDS],
     _marker: PhantomData<(Key, Payload)>,
 }
 
@@ -51,9 +52,9 @@ impl<const NUM_RECORDS: usize,
     }
 
     #[inline(always)]
-    pub fn as_records(&self) -> &[RecordPoint<Key, Payload>] {
+    pub fn as_records(&self) -> &[VersionedRecordPoint<Key, Payload>] {
         unsafe {
-            std::slice::from_raw_parts(self.record_data.as_ptr() as *const RecordPoint<Key, Payload>,
+            std::slice::from_raw_parts(self.record_data.as_ptr() as *const VersionedRecordPoint<Key, Payload>,
                                        *self.records_len.get_mut() as _)
         }
     }
@@ -74,9 +75,9 @@ impl<const NUM_RECORDS: usize,
     }
 
     #[inline(always)]
-    pub fn as_records_mut(&self) -> ShadowVec<RecordPoint<Key, Payload>> {
+    pub fn as_records_mut(&self) -> ShadowVec<VersionedRecordPoint<Key, Payload>> {
         ShadowVec {
-            ptr: self.record_data.as_ptr() as *mut RecordPoint<Key, Payload>,
+            ptr: self.record_data.as_ptr() as *mut VersionedRecordPoint<Key, Payload>,
             len: Cell::new(*self.records_len.get_mut() as _),
             update_len: Some(self.records_len.get_mut()),
         }

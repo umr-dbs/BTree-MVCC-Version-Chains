@@ -11,6 +11,7 @@ use crate::locking::locking_strategy::LockingStrategy::*;
 use crate::test::{dec_key, inc_key, INDEX, Key, MAKE_INDEX, Payload, start_paper_tests};
 use crate::tree::bplus_tree::BPlusTree;
 use crate::utils::interval::Interval;
+use crate::utils::shadow_vec::VersionList;
 use crate::utils::smart_cell::ENABLE_YIELD;
 
 mod block;
@@ -27,6 +28,14 @@ mod test;
 
 
 fn main() {
+    let tree = BPlusTree::<100, 100, u64, u64>::new_with(
+        OLC,
+        u64::MIN,
+        u64::MAX,
+        inc_key,
+        dec_key
+    );
+
     // make_splash();
     // show_alignment_bsz();
 

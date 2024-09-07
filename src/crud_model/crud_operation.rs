@@ -4,6 +4,7 @@ use std::hash::Hash;
 // use crate::record_model::Version;
 use crate::utils::interval::Interval;
 use crate::crud_model::crud_operation::CRUDOperation::{Empty, Delete, Point, Insert, Range, Update};
+use crate::record_model::Version;
 
 /// Transactions definitions.
 /// Empty variant indicates an initiation error and/or a default stack allocation.
@@ -15,12 +16,12 @@ pub enum CRUDOperation<Key: Ord + Copy + Hash, Payload: Clone> {
     Insert(Key, Payload),
     Update(Key, Payload),
     Delete(Key),
-    Point(Key),
+    Point(Key, Version),
     PeekMin,
     PeekMax,
     PopMin,
     PopMax,
-    Range(Interval<Key>),
+    Range(Interval<Key>, Version),
 }
 
 /// Explicitly support move-semantics for Transaction.
@@ -36,10 +37,10 @@ impl<Key: Display + Ord + Copy + Hash, Payload: Display + Clone> Display for CRU
                 write!(f, "Update(key: {}, payload: {})", key, payload),
             Delete(key) =>
                 write!(f, "Delete(Key: {})", key),
-            Point(key) =>
-                write!(f, "Point(Key: {})", key),
-            Range(key) =>
-                write!(f, "Range(Keys: [{}, {}])", key.lower(), key.upper()),
+            Point(key, version) =>
+                write!(f, "Point(Key: {}, version: {})", key, version),
+            Range(key, version) =>
+                write!(f, "Range(Keys: [{}, {}], version: {})", key.lower(), key.upper(), version),
             Empty => write!(f, "Empty"),
             CRUDOperation::PeekMin => 
                 write!(f, "MinPoint"),

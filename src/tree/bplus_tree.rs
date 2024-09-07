@@ -1,10 +1,12 @@
 use std::hash::Hash;
 use std::mem;
+use std::sync::atomic::Ordering::SeqCst;
 use crate::block::block_manager::BlockManager;
 use crate::tree::root::Root;
 use crate::locking::locking_strategy::{LockingStrategy, LevelExtras};
 use crate::page_model::{Attempts, BlockRef, Height, Level, ObjectCount};
 use crate::block::block::{Block, BlockGuard};
+use crate::record_model::{AtomicVersion, Version};
 use crate::test::{dec_key, inc_key};
 use crate::utils::un_cell::UnCell;
 
@@ -27,6 +29,7 @@ pub struct BPlusTree<
     pub(crate) max_key: Key,
     pub(crate) inc_key: fn(Key) -> Key,
     pub(crate) dec_key: fn(Key) -> Key,
+    pub(crate) version_clock: AtomicVersion
 }
 
 
@@ -93,7 +96,12 @@ impl<const FAN_OUT: usize,
             max_key,
             inc_key,
             dec_key,
+            version_clock: AtomicVersion::new(0),
         }
+    }
+
+    pub fn next_version(&self) -> Version {
+        self.version_clock.fetch_add(1, SeqCst)
     }
 
     pub fn new_with(locking_strategy: LockingStrategy,

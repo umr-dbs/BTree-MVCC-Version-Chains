@@ -3,6 +3,8 @@ use std::sync::atomic::AtomicU64;
 pub mod record_point;
 pub mod unsafe_clone;
 
+pub mod v_record_point;
+
 /// Declares the version type.
 pub type Version = u64;
 

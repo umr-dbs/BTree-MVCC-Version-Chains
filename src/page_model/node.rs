@@ -11,6 +11,8 @@ use crate::page_model::leaf_page::LeafPage;
 // use crate::record_model::record_like::RecordLike;
 // use crate::record_model::record_list::{PayloadVersioned, RecordList};
 use crate::record_model::record_point::RecordPoint;
+use crate::record_model::v_record_point::VersionedRecordPoint;
+use crate::record_model::Version;
 // use crate::record_model::Version;
 // use crate::record_model::version_info::VersionInfo;
 
@@ -70,7 +72,7 @@ impl NodeUnsafeDegree {
             _ => false
         }
     }
-    
+
     #[inline(always)]
     pub const fn is_unsafe(&self) -> bool {
         !self.is_ok()
@@ -164,7 +166,7 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline(always)]
-    pub fn records_mut(&self) -> ShadowVec<RecordPoint<Key, Payload>> {
+    pub fn records_mut(&self) -> ShadowVec<VersionedRecordPoint<Key, Payload>> {
         match self {
             Node::Leaf(records_page) =>
                 records_page.as_records_mut(),
@@ -173,7 +175,7 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline(always)]
-    pub fn as_records(&self) -> &[RecordPoint<Key, Payload>] {
+    pub fn as_records(&self) -> &[VersionedRecordPoint<Key, Payload>] {
         match self {
             Node::Leaf(records_page) =>
                 records_page.as_records(),
@@ -181,91 +183,54 @@ impl<const FAN_OUT: usize,
         }
     }
 
-    // #[inline(always)]
-    // pub fn record_lists_mut(&self) -> ShadowVec<RecordList<Key, Payload>> {
-    //     match self {
-    //         Node::MultiVersionLeaf(record_lists) =>
-    //             record_lists.as_records_mut(),
-    //         _ => unreachable!("Sleepy Joe hit me -> Not tree Page .record_lists_mut")
-    //     }
-    // }
-
     #[inline(always)]
     pub const fn is_directory(&self) -> bool {
         !self.is_leaf()
     }
 
     #[inline]
-    pub fn delete_key(&mut self, key: Key) -> Option<Payload> {
+    pub fn delete_key(&mut self, key: Key, del_version: Version) -> Option<Payload> {
         match self {
             Node::Leaf(events_page) => events_page
                 .as_records()
                 .binary_search_by_key(&key, |event| event.key)
-                .map(|found| events_page.as_records_mut().remove(found).payload)
-                .ok(),
-            // Node::MultiVersionLeaf(records_lists) => records_lists
-            //     .as_records_mut()
-            //     .iter_mut()
-            //     .rev()
-            //     .find(|record_list| record_list.key() == key)
-            //     .map(|record_list| record_list.delete(del_version.unwrap()))
-            //     .unwrap_or(false),
+                .map(|found| events_page
+                    .as_records_mut()
+                    .get_unchecked_mut(found)
+                    .version_list_mut()
+                    .delete(del_version))
+                .ok()?,
             _ => None,
         }
     }
 
     #[inline]
-    pub fn update_record_point(&mut self, key: Key, payload: Payload) -> Option<Payload> {
+    pub fn update_record_point(&mut self, key: Key, payload: Payload, version: Version) -> Option<Payload> {
         match self {
             Node::Leaf(events_page) => events_page
                 .as_records()
                 .binary_search_by_key(&key, |e| e.key)
-                .map(|found| unsafe {
-                    mem::replace(events_page
+                .map(|found| events_page
                     .as_records_mut()
                     .get_unchecked_mut(found)
-                    .payload_mut(), payload)
-                })
+                    .version_list
+                    .append(version, payload))
                 .ok(),
             _ => None
         }
     }
 
-    // #[inline]
-    // pub fn update_record(&mut self, key: Key, payload: Payload, version: Version) -> bool {
-    //     match self {
-    //         Node::MultiVersionLeaf(records_lists) => records_lists
-    //             .as_records()
-    //             .binary_search_by_key(&key, |record_list| record_list.key())
-    //             .map(|pos| unsafe {
-    //                 let mut records_mut
-    //                     = records_lists.as_records_mut();
-    //
-    //                 let list
-    //                     = records_mut.get_unchecked_mut(pos);
-    //
-    //                 if list.delete(version) {
-    //                     list.push_payload(payload, Some(version));
-    //                     true
-    //                 } else {
-    //                     false
-    //                 }
-    //             }).unwrap_or_default(),
-    //         _ => false
-    //     }
-    // }
-
     #[inline]
-    pub fn push_record_point(&mut self, key: Key, payload: Payload) -> bool {
+    pub fn push_record_point(&mut self, key: Key, payload: Payload, version: Version) -> bool {
         match self {
             Node::Leaf(records_page) => match records_page
                 .as_records()
                 .binary_search_by_key(&key, |event| event.key)
             {
-                Err(pos) => {
+                Err(..) => {
                     records_page
                         .as_records_mut()
-                        .insert(pos, RecordPoint::new(key, payload));
+                        .push(VersionedRecordPoint::new(key, version, payload));
 
                     true
                 }
@@ -274,28 +239,6 @@ impl<const FAN_OUT: usize,
             _ => false
         }
     }
-
-    // #[inline]
-    // pub fn push_record(&mut self, key: Key, payload: Payload, version: Version) -> bool {
-    //     match self {
-    //         Node::MultiVersionLeaf(records_lists, ..) => match records_lists
-    //             .as_records()
-    //             .binary_search_by_key(&key, |record_list| record_list.key())
-    //         {
-    //             Err(pos) => {
-    //                 records_lists
-    //                     .as_records_mut()
-    //                     .insert(pos,
-    //                             RecordList::new(key, payload, VersionInfo::new(version))
-    //                     );
-    //
-    //                 true
-    //             }
-    //             _ => false
-    //         }
-    //         _ => false
-    //     }
-    // }
 
     #[inline(always)]
     pub fn len(&self) -> usize {
