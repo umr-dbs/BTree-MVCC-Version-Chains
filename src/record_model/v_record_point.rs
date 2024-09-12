@@ -66,12 +66,12 @@ impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> VersionedRecord
     }
 }
 
-impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> UnsafeClone for VersionedRecordPoint<Key, Payload> {
-    #[inline(always)]
-    unsafe fn unsafe_clone(&self) -> Self {
-        mem::transmute_copy(self)
-    }
-}
+// impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> UnsafeClone for VersionedRecordPoint<Key, Payload> {
+//     #[inline(always)]
+//     unsafe fn unsafe_clone(&self) -> Self {
+//         mem::transmute_copy(self)
+//     }
+// }
 
 impl<Key: Display + Ord + Copy + Hash + Default, Payload: Default + Display + Clone> Display for VersionedRecordPoint<Key, Payload> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {

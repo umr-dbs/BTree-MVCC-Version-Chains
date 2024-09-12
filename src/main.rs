@@ -22,12 +22,9 @@ mod record_model;
 mod tree;
 mod utils;
 mod test;
-// @Bernhard: Manually reduce InternalNode size:
-// Check whether that makes a difference.
-
-
 
 fn main() {
+    make_splash();
     let tree = BPlusTree::<100, 100, u64, u64>::new_with(
         OLC,
         u64::MIN,
@@ -36,7 +33,7 @@ fn main() {
         dec_key
     );
 
-    // make_splash();
+
     // show_alignment_bsz();
 
     // let tree = Box::new(BPlusTree::<250, 250, Key, Key>::new_with(
