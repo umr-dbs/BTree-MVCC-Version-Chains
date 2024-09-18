@@ -36,7 +36,7 @@ pub const EXE_RANGE_LOOK_UPS: bool = false;
 pub const BSZ_BASE: usize = _4KB;
 pub const BSZ: usize = BSZ_BASE - bsz_alignment::<Key, Payload>();
 pub const FAN_OUT: usize = BSZ / 8 / 2;
-pub const NUM_RECORDS: usize = (BSZ - 2) / (8 + 8);
+pub const NUM_RECORDS: usize = (BSZ - 2) / (5 * 8);
 
 // pub const FAN_OUT: usize = 16;
 // pub const NUM_RECORDS: usize = 16;
@@ -59,8 +59,7 @@ pub type INDEX = BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
 pub const TREE: fn(CRUDProtocol) -> Tree = |crud| {
     Arc::new(if let MonoWriter = crud {
         TreeDispatcher::Wrapper(RwLock::new(MAKE_INDEX(crud)))
-    }
-    else {
+    } else {
         TreeDispatcher::Ref(MAKE_INDEX(crud))
     })
 };
@@ -242,7 +241,7 @@ pub fn start_paper_tests() {
     = false;
 
     const RQ_ENABLED: bool
-    = false;
+    = true;
 
     const N: u64
     = 10_000_000;
@@ -253,8 +252,8 @@ pub fn start_paper_tests() {
     const REPEATS: usize
     = 3;
 
-    const UPDATES_THRESHOLD: [f64; 3] = [
-        // 0.0_f64,
+    const UPDATES_THRESHOLD: [f64; 4] = [
+        0.0_f64,
         0.1_f64,
         0.5_f64,
         0.9_f64,
@@ -286,9 +285,10 @@ pub fn start_paper_tests() {
     const RQ_PROBABILITY: [f64; 1]
     = [1.0];
 
-    const RQ_OFFSET: [u64; 1] = [
-        // 4 * (NUM_RECORDS as u64 + 1_u64),
-        64 * (NUM_RECORDS as u64 + 1_u64),
+    const RQ_OFFSET: [u64; 3] = [
+        1 * (NUM_RECORDS as u64 + 1_u64),
+        16 * (NUM_RECORDS as u64 + 1_u64),
+        128 * (NUM_RECORDS as u64 + 1_u64),
     ];
 
     let data_lambdas = LAMBDAS
@@ -352,7 +352,7 @@ pub fn start_paper_tests() {
         // orwc_attempts(1),
         orwc_attempts(4),
         // orwc_attempts(16),
-        // OLC(),
+        OLC(),
         // OLC(),
 
         // LHL_read(0),
@@ -376,37 +376,16 @@ pub fn start_paper_tests() {
     // println!("Protocol,PAUSE,sched_yield,lambda,threads");
 
     for protocol in protocols {
+        let tree
+            = TREE(protocol.clone());
+
+        let (create_time, errs, create_node_visits)
+            = bulk_crud(num_cpus::get_physical(),
+                        tree.clone(),
+                        data_lambdas[0].as_slice());
+
         for lambda in 0..LAMBDAS.len() {
             for thread in THREADS {
-                let tree
-                    = TREE(protocol.clone());
-
-                // unsafe {
-                //     COUNTERS.0.store(0, SeqCst);
-                //     COUNTERS.1.store(0, SeqCst);
-                // }
-
-                // thread::sleep(Duration::from_millis(10));
-
-                // for _ in 0..5 {
-                let (create_time, errs, create_node_visits)
-                    = bulk_crud(thread,
-                                tree.clone(),
-                                data_lambdas[lambda].as_slice());
-                // }
-
-                // let (create_time, errs, create_node_visits)
-                //     = (0, 0, 0);
-
-                // thread::sleep(Duration::from_secs(1));
-
-                // unsafe {
-                //     let (pause, yields)
-                //         = (COUNTERS.0.load(SeqCst), COUNTERS.1.load(SeqCst));
-                // 
-                //     println!("{},{},{},{},{}", protocol, pause, yields, LAMBDAS[lambda], thread);
-                // }
-
                 for ut in UPDATES_THRESHOLD {
                     if RQ_ENABLED {
                         for rq in RQ_PROBABILITY {
