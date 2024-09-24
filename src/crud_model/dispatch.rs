@@ -95,14 +95,43 @@ impl<const FAN_OUT: usize,
                     .map(|old| CRUDOperationResult::Updated(key, old, update_version))
                     .unwrap_or_default())
             }
-            CRUDOperation::Point(key, version) if olc => match self.dispatch(
-                CRUDOperation::Range((key..=key).into(), version))
-            {
-                (node_visits,
-                    CRUDOperationResult::MatchedRecords(mut records))
-                if records.len() <= 1 => (node_visits, records.pop().into()),
-                (node_visits, ..) => (node_visits, CRUDOperationResult::Error)
-            },
+            CRUDOperation::Point(key, version) if olc => match self.traversal_read_olc(key) {
+                (node_visits, leaf_guard) => unsafe {
+                    let leaf_page = leaf_guard
+                        .deref_unsafe()
+                        .unwrap()
+                        .as_ref();
+
+                    let records
+                        = leaf_page.as_records();
+
+                    if leaf_guard.is_valid() {
+                        (node_visits, match records
+                            .binary_search_by_key(&key, |r| r.key)
+                            .ok()
+                        {
+                            Some(v_record) => records
+                                .get_unchecked(v_record)
+                                .find(version)
+                                .map(|v|
+                                    RecordPoint::new(key, v.payload().clone()))
+                                .into(),
+                            _ => CRUDOperationResult::MatchedRecord(None)
+                        })
+                    } else {
+                        mem::drop(leaf_guard);
+                        self.dispatch(CRUDOperation::Point(key, version))
+                    }
+                }
+            }
+            // CRUDOperation::Point(key, version) if olc => match self.dispatch(
+            //     CRUDOperation::Range((key..=key).into(), version))
+            // {
+            //     (node_visits,
+            //         CRUDOperationResult::MatchedRecords(mut records))
+            //     if records.len() <= 1 => (node_visits, records.pop().into()),
+            //     (node_visits, ..) => (node_visits, CRUDOperationResult::Error)
+            // },
             CRUDOperation::Point(key, version) => match self.traversal_read(key) {
                 (node_visits, leaf_guard) => {
                     let leaf_page = leaf_guard

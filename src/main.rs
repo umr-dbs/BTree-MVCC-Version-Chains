@@ -25,13 +25,15 @@ mod test;
 
 fn main() {
     make_splash();
-    let tree = BPlusTree::<100, 100, u64, u64>::new_with(
-        OLC,
-        u64::MIN,
-        u64::MAX,
-        inc_key,
-        dec_key
-    );
+
+
+    // let tree = BPlusTree::<100, 100, u64, u64>::new_with(
+    //     OLC,
+    //     u64::MIN,
+    //     u64::MAX,
+    //     inc_key,
+    //     dec_key
+    // );
 
 
     // show_alignment_bsz();
@@ -186,7 +188,7 @@ fn make_splash() {
     println!(" |                                                                       |");
     println!(" |               ------------------------------                          |");
     println!(" |               # Build:   {}                          |", datetime.format("%d-%m-%Y %T"));
-    println!(" |               # Current version: {}                               |", env!("CARGO_PKG_VERSION"));
+    println!(" |               # Current version: {}                                |", env!("CARGO_PKG_VERSION"));
     println!(" |               -------------------------                               |");
     println!(" |               # OLC-HLE:   {}                                     |", hle());
     println!(" |               # RW-HLE:    AUTO                                       |");
@@ -197,10 +199,10 @@ fn make_splash() {
     println!(" |               --------------------------------------------            |");
     println!(" |               # E-Mail: elshaikh@mathematik.uni-marburg.de            |");
     println!(" |               # Written by: Amir El-Shaikh                            |");
-    println!(" |               # First released: 03-08-2022                            |");
+    println!(" |               # First released: 09-09-2024                            |");
     println!(" |               ----------------------------                            |");
     println!(" |                                                                       |");
-    println!(" |               ...CC-B+Tree Application Launching...                   |");
+    println!(" |               ...MVCC-B+Tree Application Launching...                 |");
     println!(" +-------------+                                           +-------------+");
     println!("                \\_______                           _______/");
     println!("                        \\_________________________/");

@@ -1,9 +1,12 @@
 use std::collections::VecDeque;
 use std::fmt::{Display, Formatter};
 use std::{fs, thread};
+use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
+use std::io::Write;
 use std::ops::{Add, Deref, DerefMut, Div, RangeInclusive, Sub};
 use std::path::Path;
+use std::ptr::slice_from_raw_parts;
 use std::sync::Arc;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
@@ -11,7 +14,7 @@ use std::thread::spawn;
 use std::time::{Duration, SystemTime};
 use crossbeam::channel::TryRecvError;
 use hashbrown::HashMap;
-use itertools::Itertools;
+use itertools::{all, Itertools};
 use parking_lot::RwLock;
 use rand::{Rng, RngCore, SeedableRng, thread_rng};
 use rand::distributions::{Standard, Uniform};
@@ -97,6 +100,34 @@ impl TreeDispatcher {
             TreeDispatcher::Wrapper(inner) => unsafe { &*inner.data_ptr() },
             TreeDispatcher::Ref(inner) => inner
         }
+    }
+}
+
+pub fn dump_to_json(tree: Tree) {
+    const VERSION_STAR: Version = Version::MAX - 1;
+    let (nv, data)
+        = tree.dispatch(CRUDOperation::Range((Key::MIN..=Key::MAX).into(), VERSION_STAR));
+
+    if let CRUDOperationResult::MatchedRecords(all_data) = data {
+        println!("Node Visits: {}, Records: {}", format_insertions(nv), format_insertions(all_data.len()));
+
+        let mut file = OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open("dump/version_lists_dump.txt")
+            .unwrap();
+
+        all_data.iter()
+            .map(|data| &data.key)
+            .for_each(|key| unsafe {
+                let slice = &*slice_from_raw_parts(key as *const Key as *const u8, 8);
+                file.write(slice).unwrap();
+                file.write(b"\n").unwrap();
+        });
+
+        file.flush().unwrap();
+        // serde_json::to_writer(file, all_data.as_slice()).unwrap();
     }
 }
 
@@ -384,6 +415,11 @@ pub fn start_paper_tests() {
                         tree.clone(),
                         data_lambdas[0].as_slice());
 
+        println!("Starting JSON Serializer...");
+        dump_to_json(tree);
+        println!("Finished JSON Serializer!");
+
+        return;
         for lambda in 0..LAMBDAS.len() {
             for thread in THREADS {
                 for ut in UPDATES_THRESHOLD {
@@ -535,11 +571,11 @@ fn mixed_test_new(
                             let key1 = key.sub(rq_offset);
                             CRUDOperation::Range(Interval::new(
                                 key1,
-                                key), Version::MAX)
+                                key), Version::MAX - 1)
                         }
                         Some(key1) => CRUDOperation::Range(Interval::new(
                             key,
-                            key1), Version::MAX)
+                            key1), Version::MAX - 1)
                     }
                 } else {
                     CRUDOperation::Point(key, Version::MAX)
