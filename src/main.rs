@@ -1,7 +1,10 @@
 use std::{env, fs};
+use std::fs::OpenOptions;
 use std::sync::Arc;
 use chrono::{DateTime, Local};
 use parking_lot::RwLock;
+use rand::prelude::StdRng;
+use rand::SeedableRng;
 use crate::tree::bplus_tree;
 use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::crud_model::crud_operation::CRUDOperation;
@@ -27,6 +30,21 @@ fn main() {
     make_splash();
 
 
+
+    // let mut rnd = StdRng::seed_from_u64(90501960);
+    // let keys
+    //     = test::gen_data_exp(100_000, 0.1, &mut rnd);
+    //
+    // let file = OpenOptions::new()
+    //     .create(true)
+    //     .write(true)
+    //     .append(true)
+    //     .open("100k.json")
+    //     .unwrap();
+    //
+    // serde_json::to_writer(file, keys.as_slice()).unwrap();
+    //
+    // return;
     // let tree = BPlusTree::<100, 100, u64, u64>::new_with(
     //     OLC,
     //     u64::MIN,

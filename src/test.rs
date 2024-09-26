@@ -111,23 +111,19 @@ pub fn dump_to_json(tree: Tree) {
     if let CRUDOperationResult::MatchedRecords(all_data) = data {
         println!("Node Visits: {}, Records: {}", format_insertions(nv), format_insertions(all_data.len()));
 
-        let mut file = OpenOptions::new()
+        let file = OpenOptions::new()
             .write(true)
             .append(true)
             .create(true)
-            .open("dump/version_lists_dump.txt")
+            .open("vlists.json")
             .unwrap();
 
-        all_data.iter()
-            .map(|data| &data.key)
-            .for_each(|key| unsafe {
-                let slice = &*slice_from_raw_parts(key as *const Key as *const u8, 8);
-                file.write(slice).unwrap();
-                file.write(b"\n").unwrap();
-        });
+        let data = all_data
+            .iter()
+            .map(|r| r.key)
+            .collect_vec();
 
-        file.flush().unwrap();
-        // serde_json::to_writer(file, all_data.as_slice()).unwrap();
+        serde_json::to_writer(file, data.as_slice()).unwrap();
     }
 }
 
@@ -322,15 +318,28 @@ pub fn start_paper_tests() {
         128 * (NUM_RECORDS as u64 + 1_u64),
     ];
 
-    let data_lambdas = LAMBDAS
-        .iter()
-        .map(|lambda| {
-            let mut rnd = StdRng::seed_from_u64(90501960);
-            gen_data_exp(N, *lambda, &mut rnd)
-                .into_iter()
-                .map(|key| CRUDOperation::Insert(key, Payload::default()))
-                .collect::<Vec<_>>()
-        }).collect::<Vec<_>>();
+    let file = OpenOptions::new()
+        .read(true)
+        .open("/home/amir/Schreibtisch/100k.json")
+        .unwrap();
+
+    let data_lambdas: Vec<u64>
+        = serde_json::from_reader(file).unwrap();
+
+    let data_lambdas: Vec<Vec<CRUDOperation<Key, Payload>>> = vec![data_lambdas
+        .into_iter()
+        .map(|v| CRUDOperation::Insert(v, 0))
+        .collect_vec()];
+
+    // let data_lambdas = LAMBDAS
+    //     .iter()
+    //     .map(|lambda| {
+    //         let mut rnd = StdRng::seed_from_u64(90501960);
+    //         gen_data_exp(N, *lambda, &mut rnd)
+    //             .into_iter()
+    //             .map(|key| CRUDOperation::Insert(key, Payload::default()))
+    //             .collect::<Vec<_>>()
+    //     }).collect::<Vec<_>>();
 
     if MAKE_HIST {
         for lambda in 0..LAMBDAS.len() {

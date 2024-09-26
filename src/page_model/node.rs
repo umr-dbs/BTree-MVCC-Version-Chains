@@ -227,10 +227,10 @@ impl<const FAN_OUT: usize,
                 .as_records()
                 .binary_search_by_key(&key, |event| event.key)
             {
-                Err(..) => {
+                Err(pos) => {
                     records_page
                         .as_records_mut()
-                        .push(VersionedRecordPoint::new(key, version, payload));
+                        .insert(pos, VersionedRecordPoint::new(key, version, payload));
 
                     true
                 }
