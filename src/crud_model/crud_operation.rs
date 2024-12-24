@@ -17,11 +17,13 @@ pub enum CRUDOperation<Key: Ord + Copy + Hash, Payload: Clone> {
     Update(Key, Payload),
     Delete(Key),
     Point(Key, Version),
+    PointSi(Key),
     PeekMin,
     PeekMax,
     PopMin,
     PopMax,
     Range(Interval<Key>, Version),
+    RangeSi(Interval<Key>),
 }
 
 /// Explicitly support move-semantics for Transaction.
@@ -50,6 +52,10 @@ impl<Key: Display + Ord + Copy + Hash, Payload: Display + Clone> Display for CRU
                 write!(f, "PopMin"),
             CRUDOperation::PopMax =>
                 write!(f, "PopMax"),
+            CRUDOperation::PointSi(key) =>
+                write!(f, "PointSi(Key: {}, version: LIVE)", key),
+            CRUDOperation::RangeSi(key) =>
+                write!(f, "Range(Keys: [{}, {}], version: LIVE)", key.lower(), key.upper()),
         }
     }
 }

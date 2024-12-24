@@ -78,7 +78,7 @@ impl<const NUM_RECORDS: usize,
     pub fn as_records_mut(&self) -> ShadowVec<VersionedRecordPoint<Key, Payload>> {
         ShadowVec {
             ptr: self.record_data.as_ptr() as *mut VersionedRecordPoint<Key, Payload>,
-            len: Cell::new(*self.records_len.get_mut() as _),
+            len: SafeCell::new(*self.records_len.get_mut() as _),
             update_len: Some(self.records_len.get_mut()),
         }
     }

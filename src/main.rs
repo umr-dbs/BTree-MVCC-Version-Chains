@@ -1,20 +1,10 @@
 use std::{env, fs};
-use std::fs::OpenOptions;
-use std::sync::Arc;
 use chrono::{DateTime, Local};
-use parking_lot::RwLock;
-use rand::prelude::StdRng;
 use rand::SeedableRng;
-use crate::tree::bplus_tree;
-use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
-use crate::crud_model::crud_operation::CRUDOperation;
-use crate::crud_model::crud_operation_result::CRUDOperationResult;
-use crate::locking::locking_strategy::{CRUDProtocol, orwc};
+use crate::crud_model::crud_api::CRUDDispatcher;
+use crate::locking::locking_strategy::LockingStrategy;
 use crate::locking::locking_strategy::LockingStrategy::*;
-use crate::test::{dec_key, inc_key, INDEX, Key, MAKE_INDEX, Payload, start_paper_tests};
-use crate::tree::bplus_tree::BPlusTree;
-use crate::utils::interval::Interval;
-use crate::utils::shadow_vec::VersionList;
+use crate::n_test::{execute_experiments, hle};
 use crate::utils::smart_cell::ENABLE_YIELD;
 
 mod block;
@@ -24,174 +14,14 @@ mod page_model;
 mod record_model;
 mod tree;
 mod utils;
-mod test;
+// mod test;
+
+mod n_test;
 
 fn main() {
     make_splash();
 
-
-
-    // let mut rnd = StdRng::seed_from_u64(90501960);
-    // let keys
-    //     = test::gen_data_exp(100_000, 0.1, &mut rnd);
-    //
-    // let file = OpenOptions::new()
-    //     .create(true)
-    //     .write(true)
-    //     .append(true)
-    //     .open("100k.json")
-    //     .unwrap();
-    //
-    // serde_json::to_writer(file, keys.as_slice()).unwrap();
-    //
-    // return;
-    // let tree = BPlusTree::<100, 100, u64, u64>::new_with(
-    //     OLC,
-    //     u64::MIN,
-    //     u64::MAX,
-    //     inc_key,
-    //     dec_key
-    // );
-
-
-    // show_alignment_bsz();
-
-    // let tree = Box::new(BPlusTree::<250, 250, Key, Key>::new_with(
-    //     OLC,
-    //     Key::MIN,
-    //     Key::MAX,
-    //     inc_key,
-    //     dec_key
-    // ));
-    // 
-    // let insert_data = (0..25000 as Key)
-    //     .map(|k| CRUDOperation::Insert(k as Key, k as Key))
-    //     .collect::<Vec<_>>();
-    // 
-    // let delete_data = (0..25000)
-    //     .map(|_| CRUDOperation::<Key, Key>::PopMax)
-    //     .collect::<Vec<_>>();
-    // 
-    // for insert_crud in insert_data {
-    //     tree.dispatch(insert_crud);
-    // }
-    // 
-    // let mut i = 0;
-    // for delete_crud in delete_data {
-    //     println!("{i}: {delete_crud}");
-    //     // if i == 129 {
-    //     //     let s = "3asd".to_string();
-    //     // }
-    //     i += 1;
-    //     tree.dispatch(delete_crud);
-    // 
-    //     match tree.dispatch(CRUDOperation::PeekMin) {
-    //         (_, c) => {
-    //             let s = "asdas".to_string();
-    //             println!("MIN: {c}")
-    //         }
-    //     }
-    // 
-    //     match tree.dispatch(CRUDOperation::PeekMax) {
-    //         (_, c) => {
-    //             println!("MAX: {c}")
-    //         }
-    //     }
-    // }
-    // 
-    // println!("\n************\nstart paper tests");
-    start_paper_tests();
-    //
-    // const THREADS: usize        = 24;
-    // const INSERTIONS: usize     = 10_000_000;
-    // const VALIDATE_CRUD: bool   = true;
-    // const CRUD: CRUDProtocol    = olc();
-    // // const CRUD: CRUDProtocol = LockCoupling;
-    // // const CRUD: CRUDProtocol = LockCoupling;
-    // // const CRUD: CRUDProtocol = LockCoupling;
-    // // const CRUD: CRUDProtocol = LockCoupling;
-    //
-    // let tree = TREE(CRUD);
-    // // End Init B-Tree FREE
-    //
-    // let data_org
-    //     = gen_rand_data(INSERTIONS);
-    //
-    // let data = data_org
-    //     .chunks(data_org.len() / THREADS)
-    //     .map(|c| c.to_vec())
-    //     .collect::<Vec<_>>();
-    //
-    // println!("Number Insertions,Number Threads,Locking Strategy,Create Time,Fan Out,Leaf Records,Block Size,Scan Time");
-    // print!("{}", INSERTIONS);
-    // print!(",{}", THREADS);
-    // print!(",{}", CRUD);
-    //
-    // let mut handles
-    //     = Vec::with_capacity(THREADS);
-    //
-    // let insert_data = data
-    //     .iter()
-    //     .map(|inner_insert| inner_insert
-    //         .iter()
-    //         .map(|k| CRUDOperation::Insert(*k, Payload::default()))
-    //         .collect::<Vec<_>>())
-    //     .collect::<Vec<_>>();
-    //
-    // let start = SystemTime::now();
-    // for chunk in insert_data {
-    //     let tree = tree.clone();
-    //     handles.push(thread::spawn(move ||
-    //         for insertion in chunk {
-    //             if VALIDATE_CRUD {
-    //                 match tree.dispatch(insertion) {
-    //                     CRUDOperationResult::Inserted(..) => {},
-    //                     _ => assert!(false)
-    //                 }
-    //             }
-    //             else {
-    //                 tree.dispatch(insertion);
-    //             }
-    //     }));
-    // }
-    //
-    // for thread in handles.drain(..) {
-    //     thread.join().unwrap();
-    // }
-    //
-    // print!(",{}", SystemTime::now().duration_since(start).unwrap().as_millis());
-    // print!(",{}", FAN_OUT);
-    // print!(",{}", NUM_RECORDS);
-    // print!(",{}", BSZ_BASE);
-    //
-    // let search_data = data
-    //     .into_iter()
-    //     .map(|inner_search| inner_search
-    //         .into_iter()
-    //         .map(|k| CRUDOperation::Point(k))
-    //         .collect::<Vec<_>>())
-    //     .collect::<Vec<_>>();
-    //
-    // let start = SystemTime::now();
-    // for chunk in search_data {
-    //     let tree = tree.clone();
-    //     handles.push(thread::spawn(move ||
-    //         for search_op in chunk {
-    //             if VALIDATE_CRUD {
-    //                 match tree.dispatch(search_op) {
-    //                     CRUDOperationResult::MatchedRecord(Some(..))
-    //                     => {}
-    //                     _ => assert!(false)
-    //                 }
-    //             }
-    //             else {
-    //                 tree.dispatch(search_op);
-    //             }
-    //         }
-    //     ));
-    // }
-    //
-    // println!(",{}", SystemTime::now().duration_since(start).unwrap().as_millis());
+    execute_experiments()
 }
 
 /// Essential function.
@@ -229,15 +59,3 @@ fn make_splash() {
     println!("--> System Log:");
 }
 
-
-pub fn hle() -> &'static str {
-    if cfg!(feature = "hardware-lock-elision") {
-        if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
-            "ON    "
-        } else {
-            "NO HTL"
-        }
-    } else {
-        "OFF   "
-    }
-}

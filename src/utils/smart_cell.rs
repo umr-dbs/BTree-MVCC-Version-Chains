@@ -79,19 +79,19 @@ pub enum LatchType {
     LightWeightHybrid,
     None,
 }
-pub static mut COUNTERS: (AtomicUsize, AtomicUsize) =
-    (AtomicUsize::new(0), AtomicUsize::new(0));
+// pub static mut COUNTERS: (AtomicUsize, AtomicUsize) =
+//     (AtomicUsize::new(0), AtomicUsize::new(0));
 
 #[inline(always)]
 #[cfg(target_os = "linux")]
 pub fn sched_yield(attempt: Attempts) {
     if attempt > 3 {
         unsafe {
-            COUNTERS.1.fetch_add(1, Relaxed);
+            // COUNTERS.1.fetch_add(1, Relaxed);
             libc::sched_yield();
         }
     } else {
-        unsafe { COUNTERS.0.fetch_add(1, Relaxed); }
+        // unsafe { COUNTERS.0.fetch_add(1, Relaxed); }
         hint::spin_loop();
     }
 }
@@ -452,7 +452,7 @@ impl<'a, E: Default + 'static> Clone for SmartGuard<'_, E> {
         match self {
             OLCReader(inner) => OLCReader(inner.clone()),
             OLCReaderPin(inner, read_latch) =>
-                OLCReader(Some((inner.clone(), (*read_latch & !PIN_FLAG_VERSION)))),
+                OLCReader(Some((inner.clone(), *read_latch & !PIN_FLAG_VERSION))),
             RwReader(guard, ptr) => RwReader(
                 RwLockReadGuard::rwlock(guard)
                     .read(),
@@ -496,13 +496,13 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
 
                 ptr::write(self, s_guard)
             },
-            // OLCWriter(cell, latch)
-            // if *latch & OBSOLETE_FLAG_VERSION == 0 => {
-            //     let reader
-            //         = OLCReader(Some((cell.clone(), *latch & !WRITE_FLAG_VERSION)));
-            //
-            //     let _ = mem::replace(self, reader);
-            // }
+            OLCWriter(cell, latch)
+            if *latch & OBSOLETE_FLAG_VERSION == 0 => unsafe {
+                let reader
+                    = OLCReader(Some((transmute_copy(cell), *latch & !WRITE_FLAG_VERSION)));
+
+                ptr::write(self, reader);
+            }
             _ => {}
         }
     }

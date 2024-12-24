@@ -27,17 +27,17 @@ impl<const FAN_OUT: usize,
 
     pub(crate) fn has_underflow(&self, node: &Node<FAN_OUT, NUM_RECORDS, Key, Payload>) -> bool {
         match node.is_leaf() {
-            true => node.is_underflow(self.block_manager.allocation_leaf() - 1),
-            false => node.is_underflow(self.block_manager.allocation_directory())
+            true => node.is_underflow(self.block_manager.allocation_leaf()),
+            false => node.is_underflow(self.block_manager.allocation_directory() - 1)
         }
     }
 
-    fn unsafe_degree_of(&self, node: &Node<FAN_OUT, NUM_RECORDS, Key, Payload>) -> NodeUnsafeDegree {
-        match node.is_leaf() {
-            true => node.unsafe_degree(self.block_manager.allocation_leaf()),
-            false => node.unsafe_degree(self.block_manager.allocation_directory()),
-        }
-    }
+    // fn unsafe_degree_of(&self, node: &Node<FAN_OUT, NUM_RECORDS, Key, Payload>) -> NodeUnsafeDegree {
+    //     match node.is_leaf() {
+    //         true => node.unsafe_degree(self.block_manager.allocation_leaf()),
+    //         false => node.unsafe_degree(self.block_manager.allocation_directory()),
+    //     }
+    // }
 
     #[inline]
     pub(crate) fn retrieve_root(&self, mut lock_level: Level, mut attempt: Attempts)
@@ -364,6 +364,8 @@ impl<const FAN_OUT: usize,
         let mufasa = parent_guard
             .deref_mut()
             .unwrap();
+
+        let len = mufasa.len();
 
         let child_key = unsafe { *mufasa.keys().get_unchecked(child_pos) };
 

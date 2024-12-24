@@ -5,6 +5,7 @@ use std::cell::Cell;
 use std::mem::MaybeUninit;
 use std::ptr::null_mut;
 use crate::page_model::{BlockRef, ObjectCount};
+use crate::utils::safe_cell::SafeCell;
 use crate::utils::shadow_vec::ShadowVec;
 
 pub struct InternalPage<
@@ -59,7 +60,7 @@ impl<const FAN_OUT: usize,
         unsafe {
             ShadowVec {
                 ptr: self.key_array.as_ptr().add(1) as *mut Key,
-                len: Cell::new(self.keys_len()),
+                len: SafeCell::new(self.keys_len()),
                 update_len: Some(self.key_array.as_ptr() as *mut ObjectCount),
             }
         }
@@ -69,7 +70,7 @@ impl<const FAN_OUT: usize,
     pub fn children_mut(&self) -> ShadowVec<BlockRef<FAN_OUT, NUM_RECORDS, Key, Payload>> {
         ShadowVec {
             ptr: self.children_array.as_ptr() as _,
-            len: Cell::new(self.children_len()),
+            len: SafeCell::new(self.children_len()),
             update_len: None,
         }
     }

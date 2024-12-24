@@ -124,14 +124,10 @@ impl<const FAN_OUT: usize,
                     }
                 }
             }
-            // CRUDOperation::Point(key, version) if olc => match self.dispatch(
-            //     CRUDOperation::Range((key..=key).into(), version))
-            // {
-            //     (node_visits,
-            //         CRUDOperationResult::MatchedRecords(mut records))
-            //     if records.len() <= 1 => (node_visits, records.pop().into()),
-            //     (node_visits, ..) => (node_visits, CRUDOperationResult::Error)
-            // },
+            CRUDOperation::PointSi(key) => self.dispatch(CRUDOperation::Point(
+                key,
+                self.committed_version())
+            ),
             CRUDOperation::Point(key, version) => match self.traversal_read(key) {
                 (node_visits, leaf_guard) => {
                     let leaf_page = leaf_guard
@@ -166,6 +162,10 @@ impl<const FAN_OUT: usize,
 
                 self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
             }
+            CRUDOperation::RangeSi(key_interval) => self.dispatch(CRUDOperation::Range(
+                key_interval,
+                self.committed_version()
+            )),
             CRUDOperation::Range(interval, version) => {
                 let (node_visits, guards)
                     = self.traversal_read_range(&interval);

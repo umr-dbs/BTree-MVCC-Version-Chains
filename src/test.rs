@@ -57,7 +57,7 @@ pub fn dec_key(k: Key) -> Key {
     k.checked_sub(1).unwrap_or(Key::MIN)
 }
 
-pub type INDEX = BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
+
 
 pub const TREE: fn(CRUDProtocol) -> Tree = |crud| {
     Arc::new(if let MonoWriter = crud {

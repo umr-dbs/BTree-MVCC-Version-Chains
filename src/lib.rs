@@ -5,8 +5,7 @@ pub mod page_model;
 pub mod record_model;
 pub mod tree;
 pub mod utils;
-pub mod test;
-
+pub mod n_test;
 
 type BTreeApi = INDEX;
 
@@ -49,16 +48,15 @@ use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::locking::locking_strategy::{hybrid_lock_attempts, LHL_read_write, LockingStrategy, orwc, orwc_attempts};
-use crate::record_model::record_point::RecordPoint;
-use crate::record_model::Version;
-use crate::test::{INDEX, MAKE_INDEX};
+use crate::n_test::INDEX;
+use crate::tree::bplus_tree::new_INDEX;
 use crate::utils::interval::Interval;
 
 impl BTreeApiExport {
     #[inline(always)]
     fn find(&self, key: *const u8, _sz: usize, value_out: *mut u8) -> bool {
         match self.dispatch(CRUDOperation::Point(
-            unsafe { ptr::read(mem::transmute(key)) }, Version::MAX))
+            unsafe { ptr::read(mem::transmute(key)) }, self.committed_version()))
         {
             (.., CRUDOperationResult::MatchedRecord(Some(result)))
              => unsafe {
@@ -121,32 +119,21 @@ impl BTreeApiExport {
 
     #[inline(always)]
     fn scan(&self, key: *const u8, _key_sz: usize, mut scan_sz: i32, mut values_out: *mut *mut u8) -> i32 {
-        let mut result
-            = Vec::<*mut RecordPoint<u64, f64>>::with_capacity(scan_sz as _);
-
         let key_start = unsafe { *(key as *const u64) };
         let key_end = key_start + scan_sz as u64 - 1;
+        let mut len = 0;
 
-        match self.dispatch(CRUDOperation::Range(Interval::new(key_start, key_end), Version::MAX)) {
+        match self.dispatch(CRUDOperation::Range(Interval::new(key_start, key_end), self.committed_version())) {
             (.., CRUDOperationResult::MatchedRecords(mut buff)) if !buff.is_empty() => unsafe {
                 buff.shrink_to_fit();
 
-                buff.iter()
-                    .for_each(|r|
-                    result.push(r as *const _ as *mut _));
+                *values_out = buff.as_mut_ptr() as _;
+                len = buff.len() as _;
 
                 mem::forget(buff);
             }
             _ => {}
         }
-
-        result.shrink_to_fit();
-        unsafe {
-            *values_out = result.as_mut_ptr() as _;
-        }
-
-        let len = result.len() as _;
-        mem::forget(result);
 
         len
     }
@@ -171,7 +158,7 @@ pub extern "C" fn init_tree(p: c_int, e1: c_int, e2: c_int) -> *mut c_void {
         _ => orwc(),
     };
     
-    Box::into_raw(Box::new(BTreeApiExport(MAKE_INDEX(lp)))) as _
+    Box::into_raw(Box::new(BTreeApiExport(new_INDEX(lp)))) as _
 }
 
 #[no_mangle]

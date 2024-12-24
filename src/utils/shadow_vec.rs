@@ -1,13 +1,15 @@
 use std::cell::Cell;
 use std::{mem, ptr, slice};
-use std::ops::Deref;
+use std::ops::{Deref, IndexMut};
 use std::ptr::slice_from_raw_parts_mut;
+use std::sync::Arc;
 use crate::page_model::ObjectCount;
 use crate::record_model::Version;
+use crate::utils::safe_cell::SafeCell;
 
 pub struct ShadowVec<E: Default + Clone> {
     pub(crate) ptr: *mut E,
-    pub(crate) len: Cell<usize>,
+    pub(crate) len: SafeCell<usize>,
     pub(crate) update_len: Option<*mut ObjectCount>,
 }
 
@@ -26,17 +28,17 @@ impl<E: Default + Clone> ShadowVec<E> {
 
     pub fn clear(&self) {
         unsafe {
-            (&mut *slice_from_raw_parts_mut(self.ptr, self.len.get()))
+            (&mut *slice_from_raw_parts_mut(self.ptr, *self.len))
                 .iter_mut()
                 .for_each(|c| ptr::drop_in_place(c));
 
-            self.len.set(0);
+            *self.len.get_mut() = 0;
         }
     }
 
     pub fn extend<I>(&self, items: I) where I: IntoIterator<Item=E> {
         let mut len
-            = self.len.get();
+            = *self.len;
 
         items.into_iter().for_each(|item| unsafe {
             self.ptr
@@ -46,14 +48,14 @@ impl<E: Default + Clone> ShadowVec<E> {
             len += 1;
         });
 
-        self.len.set(len)
+        *self.len.get_mut() = len
     }
 
     pub fn pop(&self) -> E {
         let len
-            = self.len.get();
+            = *self.len;
 
-        self.len.set(len - 1);
+        *self.len.get_mut() = len - 1;
 
         unsafe {
             self.ptr
@@ -65,7 +67,7 @@ impl<E: Default + Clone> ShadowVec<E> {
     pub fn remove(&self, index: usize) -> E {
         unsafe {
             let len
-                = self.len.get();
+                = *self.len;
 
             if index == len - 1 {
                 return self.pop();
@@ -82,7 +84,7 @@ impl<E: Default + Clone> ShadowVec<E> {
                     self.ptr.add(index + 1),
                     len - index - 1);
 
-            self.len.set(len - 1);
+            *self.len.get_mut() = len - 1;
 
             e
         }
@@ -91,38 +93,38 @@ impl<E: Default + Clone> ShadowVec<E> {
     pub fn push(&self, e: E) {
         unsafe {
             let len
-                = self.len.get();
+                = *self.len;
 
             self.ptr
                 .add(len)
                 .write(e);
 
-            self.len.set(len + 1)
+            *self.len.get_mut() = len + 1
         }
     }
 
     pub fn insert(&self, index: usize, e: E) {
         unsafe {
             let len
-                = self.len.get();
+                = *self.len;
 
             let p
                 = self.ptr.add(index);
-            
+
             if index < len {
                 ptr::copy(p, p.add(1), len - index);
             }
-            
+
             p.write(e);
 
-            self.len.set(len + 1)
+            *self.len.get_mut() = len + 1
         }
     }
 
     pub fn extend_from_slice(&self, other: &[E]) {
         unsafe {
             let len
-                = self.len.get();
+                = *self.len;
 
             let p = self.ptr.add(len);
             other.iter()
@@ -131,7 +133,7 @@ impl<E: Default + Clone> ShadowVec<E> {
             
             // ptr::copy(other.as_ptr(), self.ptr.add(len), other.len());
 
-            self.len.set(len + other.len())
+            *self.len.get_mut() = len + other.len()
         }
     }
 }
@@ -140,7 +142,7 @@ impl<E: Default + Clone> Drop for ShadowVec<E> {
     fn drop(&mut self) {
         unsafe {
             if let Some(obj_len_ptr) = self.update_len {
-                ptr::write_unaligned(obj_len_ptr, self.len.get() as _)
+                ptr::write_unaligned(obj_len_ptr, *self.len as _)
                 // *self.obj_cnt = self.unreal_vec.len() as _
             }
         }
@@ -235,7 +237,7 @@ impl<Payload: Clone + Default> VersionList<Payload> {
             = &mut self.0;
 
         while curr.entry.version > version {
-            curr = curr.next.as_deref_mut()?;
+            curr = curr.next.as_deref()?.get_mut();
         }
 
         if curr.entry.del_version > version {
@@ -247,14 +249,14 @@ impl<Payload: Clone + Default> VersionList<Payload> {
     }
 
     pub fn append(&mut self, version: Version, payload: Payload) -> Payload {
-        let old_self = Box::new(mem::replace(&mut self.0, VEntryPayload {
+        let old_self = Arc::new(SafeCell::new(mem::replace(&mut self.0, VEntryPayload {
             entry: VTuple {
                 version,
                 del_version: Version::MAX,
                 payload,
             },
             next: None
-        }));
+        })));
 
         let old_payload = old_self
             .payload()
@@ -284,7 +286,7 @@ impl<Payload: Clone + Default> VersionList<Payload> {
 #[derive(Clone, Default)]
 pub struct VEntryPayload<Payload: Clone + Default>  {
     pub entry: VTuple<Payload>,
-    next: Option<Box<VEntryPayload<Payload>>>
+    next: Option<Arc<SafeCell<VEntryPayload<Payload>>>>
 }
 
 impl<Payload: Clone + Default> Deref for VEntryPayload<Payload> {

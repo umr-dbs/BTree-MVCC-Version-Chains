@@ -6,8 +6,9 @@ use crate::tree::root::Root;
 use crate::locking::locking_strategy::{LockingStrategy, LevelExtras};
 use crate::page_model::{Attempts, BlockRef, Height, Level, ObjectCount};
 use crate::block::block::{Block, BlockGuard};
+use crate::n_test::{dec_key, inc_key, INDEX};
 use crate::record_model::{AtomicVersion, Version};
-use crate::test::{dec_key, inc_key};
+use crate::tree::bplus_tree;
 use crate::utils::un_cell::UnCell;
 
 pub type LockLevel = ObjectCount;
@@ -31,7 +32,6 @@ pub struct BPlusTree<
     pub(crate) dec_key: fn(Key) -> Key,
     pub(crate) version_clock: AtomicVersion
 }
-
 
 unsafe impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
@@ -57,6 +57,11 @@ impl<const FAN_OUT: usize,
             inc_key,
             dec_key)
     }
+}
+
+#[allow(non_snake_case)]
+pub fn new_INDEX(locking_strategy: LockingStrategy) -> INDEX {
+   BPlusTree::new_with(locking_strategy, u64::MIN, u64::MAX, inc_key, dec_key)
 }
 
 impl<const FAN_OUT: usize,
@@ -102,6 +107,10 @@ impl<const FAN_OUT: usize,
 
     pub fn next_version(&self) -> Version {
         self.version_clock.fetch_add(1, SeqCst)
+    }
+
+    pub fn committed_version(&self) -> Version {
+        self.version_clock.load(SeqCst)
     }
 
     pub fn new_with(locking_strategy: LockingStrategy,

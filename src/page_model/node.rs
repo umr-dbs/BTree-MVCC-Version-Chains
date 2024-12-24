@@ -213,7 +213,6 @@ impl<const FAN_OUT: usize,
                 .map(|found| events_page
                     .as_records_mut()
                     .get_unchecked_mut(found)
-                    .version_list
                     .append(version, payload))
                 .ok(),
             _ => None
@@ -234,7 +233,14 @@ impl<const FAN_OUT: usize,
 
                     true
                 }
-                _ => false
+                Ok(pos) => unsafe {
+                    records_page
+                        .as_records_mut()
+                        .get_unchecked_mut(pos)
+                        .append(version, payload);
+
+                    true
+                }
             }
             _ => false
         }
