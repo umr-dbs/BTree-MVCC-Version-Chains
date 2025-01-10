@@ -202,7 +202,8 @@ impl Display for SubGroupConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{}",
+            "_",
             self.range_start,
             self.range_end,
             self.lambda,
