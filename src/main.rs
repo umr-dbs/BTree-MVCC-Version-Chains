@@ -1,6 +1,7 @@
-use std::{env, fs};
+use std::{env, fs, mem};
 use chrono::{DateTime, Local};
 use rand::SeedableRng;
+use crate::block::block::Block;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::locking::locking_strategy::LockingStrategy;
 use crate::locking::locking_strategy::LockingStrategy::*;
@@ -21,6 +22,7 @@ mod n_test;
 fn main() {
     make_splash();
 
+    // println!("Size of Node = {}", mem::size_of::<Block<250, 102, u64, u64>>());
     execute_experiments()
 }
 

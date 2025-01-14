@@ -25,6 +25,7 @@ use std::sync::atomic::{fence, AtomicUsize};
 use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::sync::Arc;
 use std::{mem, thread};
+use std::os::unix::thread::JoinHandleExt;
 use std::thread::{spawn, JoinHandle};
 use std::time::{Duration, SystemTime};
 use crate::crud_model::crud_api::CRUDDispatcher;
@@ -42,23 +43,27 @@ pub fn olap(index: IndexHandler, snapshot: SnapShot, time_seconds: u64) -> Sende
     let (sender, receiver)
         = bounded(0);
 
-    // let olap_tx = CRUDOperation::Point(u64::default(), snapshot);
-
     let _join_handle = spawn(move || if let Either::Left(m_index) = index {
-        // let _tracked = manager.enq_bookkeeping(&olap_tx);
+        let olap_runner = spawn(move || {
+            let olap_tx
+                = CRUDOperation::Range((u64::MIN..=u64::MAX).into(), snapshot);
+
+            loop { let (_nv, _crud_res) = m_index.dispatch(olap_tx.clone()); }
+        });
+
         let started = SystemTime::now();
         loop {
             if let Err(TryRecvError::Disconnected) = receiver.try_recv() {
+                unsafe { let _e = libc::pthread_cancel(olap_runner.as_pthread_t()); }
                 break
             }
             else if SystemTime::now().duration_since(started).unwrap().as_secs() < time_seconds {
                 thread::sleep(Duration::from_millis(1))
             } else {
+                unsafe { let _e = libc::pthread_cancel(olap_runner.as_pthread_t()); }
                 break
             }
         }
-
-        // manager.deq_book_keeping(snapshot)
     });
 
     sender
@@ -408,8 +413,8 @@ fn run_experiment_with_params(
     index_handler
 }
 
-pub const FAN_OUT: usize = 127;
-pub const NUM_RECORDS: usize = 127;
+pub const FAN_OUT: usize = 255 - 5;
+pub const NUM_RECORDS: usize = 107 - 5;
 
 pub type Key = u64;
 pub type Payload = u64;
