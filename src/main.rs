@@ -41,15 +41,17 @@ fn make_splash() {
     println!(" |               # Current version: {}                                |", env!("CARGO_PKG_VERSION"));
     println!(" |               -------------------------                               |");
     println!(" |               # OLC-HLE:   {}                                     |", hle());
-    println!(" |               # RW-HLE:    AUTO                                       |");
-    println!(" |               # SYS-YIELD: {}                                       |",
-             if ENABLE_YIELD { "ON  " } else { "OFF " });
+    // println!(" |               # RW-HLE:    AUTO                                       |");
+    // println!(" |               # SYS-YIELD: {}                                       |",
+    //          if ENABLE_YIELD { "ON  " } else { "OFF " });
     println!(" |               -----------------                                       |");
     println!(" |                                                                       |");
     println!(" |               --------------------------------------------            |");
     println!(" |               # E-Mail: elshaikh@mathematik.uni-marburg.de            |");
     println!(" |               # Written by: Amir El-Shaikh                            |");
     println!(" |               # First released: 09-09-2024                            |");
+    println!(" |               # Repository:                                           |");
+    println!(" |               https://github.com/umr-dbs/DEXA-VersionLists-BPlusTree  |");
     println!(" |               ----------------------------                            |");
     println!(" |                                                                       |");
     println!(" |               ...MVCC-B+Tree Application Launching...                 |");
