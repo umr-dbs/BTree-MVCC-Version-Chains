@@ -9,6 +9,8 @@ use crate::record_model::record_point::RecordPoint;
 use crate::record_model::Version;
 use crate::tree::bplus_tree::BPlusTree;
 
+const DEBUG_VERIFY: bool = false;
+
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash + Sync + Display,
@@ -55,11 +57,32 @@ impl<const FAN_OUT: usize,
                     .traversal_write_olc(key);
 
                 let ingest_version = self.next_version();
-                (node_visits, guard.deref_mut()
-                    .unwrap()
-                    .push_record_point(key, payload, ingest_version)
-                    .then(|| CRUDOperationResult::Inserted(key, ingest_version))
-                    .unwrap_or_default())
+
+                if DEBUG_VERIFY {
+                    let res =  (node_visits, guard.deref_mut()
+                        .unwrap()
+                        .push_record_point(key, payload, ingest_version)
+                        .then(|| CRUDOperationResult::Inserted(key, ingest_version))
+                        .unwrap_or_default());
+
+                    mem::drop(guard);
+                    let (_, r)
+                        = self.dispatch(CRUDOperation::Point(key, ingest_version));
+
+                    match r {
+                        CRUDOperationResult::MatchedRecord(..) => {},
+                        _ => println!("Error finding new Inserted Version")
+                    }
+
+                    res
+                }
+                else {
+                    (node_visits, guard.deref_mut()
+                        .unwrap()
+                        .push_record_point(key, payload, ingest_version)
+                        .then(|| CRUDOperationResult::Inserted(key, ingest_version))
+                        .unwrap_or_default())
+                }
             }
             CRUDOperation::Insert(key, payload) => {
                 let (node_visits, guard) = self
@@ -77,12 +100,33 @@ impl<const FAN_OUT: usize,
                     .traversal_write_olc(key);
 
                 let update_version = self.next_version();
-                (node_visits, guard
-                    .deref_mut()
-                    .unwrap()
-                    .update_record_point(key, payload, update_version)
-                    .map(|old| CRUDOperationResult::Updated(key, old, update_version))
-                    .unwrap_or_default())
+                if DEBUG_VERIFY {
+                    let res = (node_visits, guard
+                        .deref_mut()
+                        .unwrap()
+                        .update_record_point(key, payload, update_version)
+                        .map(|old| CRUDOperationResult::Updated(key, old, update_version))
+                        .unwrap_or_default());
+
+                    mem::drop(guard);
+                    let (_, r)
+                        = self.dispatch(CRUDOperation::Point(key, update_version));
+
+                    match r {
+                        CRUDOperationResult::MatchedRecord(..) => {},
+                        _ => println!("Error finding new Updated Version")
+                    }
+
+                    res
+                }
+                else {
+                    (node_visits, guard
+                        .deref_mut()
+                        .unwrap()
+                        .update_record_point(key, payload, update_version)
+                        .map(|old| CRUDOperationResult::Updated(key, old, update_version))
+                        .unwrap_or_default())
+                }
             }
             CRUDOperation::Update(key, payload) => {
                 let (node_visits, guard) = self

@@ -9,7 +9,7 @@ use crate::utils::smart_cell::{LatchType, SmartGuard};
 
 // #[repr(align(4096))]
 // #[repr(C, packed)]
-#[repr(align(4096))]
+// #[repr(align(4096))]
 pub struct Block<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
