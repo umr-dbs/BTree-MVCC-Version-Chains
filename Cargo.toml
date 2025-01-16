@@ -19,7 +19,6 @@ overflow-checks = false
 
 [features]
 olc-hle = []
-orwc-fair = []
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

@@ -28,6 +28,7 @@ use std::{mem, thread};
 use std::os::unix::thread::JoinHandleExt;
 use std::thread::{spawn, JoinHandle};
 use std::time::{Duration, SystemTime};
+use rand::distributions::Alphanumeric;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
@@ -434,7 +435,56 @@ pub const FAN_OUT: usize = 255 - 5;
 pub const NUM_RECORDS: usize = 107 - 5;
 
 pub type Key = u64;
-pub type Payload = u64;
+pub type Payload = PayloadIndirection;
+
+pub const PAYLOAD_STR_LEN_MIN: usize = 704;
+pub const PAYLOAD_STR_LEN_MAX: usize = 7078;
+pub const PAYLOAD_ATTR_STR_COUNT: usize = 67;
+
+fn rnd_str(len_min: usize, len_max: usize) -> String {
+    let len = thread_rng().gen_range(len_min..=len_max);
+    thread_rng()
+        .sample_iter(&Alphanumeric)
+        .take(len)
+        .map(char::from)
+        .collect()
+}
+
+fn rnd_str_vec(items: usize, str_len_min: usize, str_len_max: usize) -> Vec<String> {
+    (0..items)
+        .map(|i| rnd_str(str_len_min, str_len_max))
+        .collect()
+}
+#[derive(Clone)]
+pub struct PayloadIndirection(Box<PayloadData>);
+
+#[derive(Clone)]
+pub struct PayloadData {
+    attributes: Vec<String>
+}
+
+impl PayloadData {
+    pub fn attr(&self, i: usize) -> &str {
+        self.attributes.get(i).unwrap()
+    }
+}
+
+impl Default for PayloadIndirection {
+    fn default() -> Self {
+        Self(Box::new(PayloadData {
+            attributes: rnd_str_vec(
+                PAYLOAD_ATTR_STR_COUNT,
+                PAYLOAD_STR_LEN_MIN,
+                PAYLOAD_STR_LEN_MAX),
+        }))
+    }
+}
+
+impl Display for PayloadIndirection {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.0.attributes.join(", "))
+    }
+}
 
 pub fn inc_key(k: Key) -> Key {
     k.checked_add(1).unwrap_or(Key::MAX)
@@ -511,11 +561,11 @@ fn experiment(
                 let (mut tx_success, mut tx_error, start_execution_time) =
                     (0usize, 0usize, SystemTime::now());
 
-                let local_tx = |key: u64| -> CRUDOperation<u64, u64> {
+                let local_tx = |key: Key| -> CRUDOperation<Key, Payload> {
                     let random_number = thread_rng().gen_range(0..100);
 
                     if random_number < insert_ratio {
-                        CRUDOperation::Insert(key, u64::default())
+                        CRUDOperation::Insert(key, Payload::default())
                     } else if random_number < insert_ratio + points_reads_ratio {
                         CRUDOperation::PointSi(key)
                     } else if random_number < insert_ratio + points_reads_ratio + range_reads_ratio
@@ -530,7 +580,7 @@ fn experiment(
                     {
                         CRUDOperation::Delete(key)
                     } else {
-                        CRUDOperation::Update(key, u64::default())
+                        CRUDOperation::Update(key, Payload::default())
                     }
                 };
 
