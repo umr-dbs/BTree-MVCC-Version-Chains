@@ -33,6 +33,7 @@ use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::locking::locking_strategy::CRUDProtocol;
+use crate::page_model::node::Node;
 use crate::record_model::Version;
 use crate::tree::bplus_tree;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
@@ -254,7 +255,7 @@ pub fn execute_experiments() {
         .fold(groups.len(), |acc, group| acc + group.num_chains());
 
     println!("[Loaded] - Experiments loaded #{total_exps}");
-    println!("experiment_id,chain_id,tx_target,tx_executed,tx_success,tx_fail,time,protocol,clock,range_start,range_end,lambda,gc_enable,threads,insert_ratio,update_ratio,delete_ratio,point_reads_ratio,range_reads_ratio,range_size");
+    println!("experiment_id,chain_id,tx_target,tx_executed,tx_success,tx_fail,time,protocol,clock,range_start,range_end,lambda,gc_enable,threads,insert_ratio,update_ratio,delete_ratio,point_reads_ratio,range_reads_ratio,range_size,log_height,actual_height");
     groups
         .into_iter()
         .enumerate()
@@ -282,8 +283,8 @@ pub fn execute_experiments() {
                 }
             }
             // drop(olap_handle.take());
-            println!(",{experiment}");
-
+            let (h, r) = height_root(&index_handler);
+            println!(",{experiment},{h},{r}");
             experiment
                 .chain_groups
                 .into_iter()
@@ -319,7 +320,8 @@ pub fn execute_experiments() {
                         }
                     }
                     // drop(olap_handle.take());
-                    println!(",{},{}", experiment.protocol, inner_group);
+                    let (h, r) = height_root(&index_handler);
+                    println!(",{},{},{h},{r}", experiment.protocol, inner_group);
                 });
         })
 }
@@ -430,12 +432,14 @@ fn run_experiment_with_params(
 
     index_handler
 }
+pub const DEBUG: bool = true;
 
-pub const FAN_OUT: usize = 255 - 5;
-pub const NUM_RECORDS: usize = 107 - 5;
+pub const FAN_OUT: usize = 255;
+pub const NUM_RECORDS: usize = 102;
 
 pub type Key = u64;
-pub type Payload = PayloadIndirection;
+// pub type Payload = PayloadIndirection;
+pub type Payload = u64;
 
 pub const PAYLOAD_STR_LEN_MIN: usize = 704;
 pub const PAYLOAD_STR_LEN_MAX: usize = 7078;
@@ -628,4 +632,24 @@ pub fn format_insertions(i: usize) -> String {
     } else {
         i.to_string()
     }
+}
+fn height_root(index_handler: &IndexHandler) -> (usize, usize) {
+    if let Either::Left(index) = index_handler {
+        let log_height = index.root.height() as usize;
+        let mut real_height = 1usize;
+
+        let mut curr_block = index.root.block().clone();
+        let mut curr_guard = curr_block.borrow_read();
+        loop {
+            match curr_guard.deref().unwrap().node_data {
+                Node::Index(ref page) => unsafe {
+                    curr_block = page.get_child_unsafe(0).clone();
+                    curr_guard = curr_block.borrow_read();
+                },
+                _ => return (log_height, real_height),
+            }
+            real_height += 1;
+        }
+    }
+    unreachable!()
 }

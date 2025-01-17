@@ -5,7 +5,7 @@ use crate::block::block::Block;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::locking::locking_strategy::LockingStrategy;
 use crate::locking::locking_strategy::LockingStrategy::*;
-use crate::n_test::{execute_experiments, hle};
+use crate::n_test::{execute_experiments, hle, Key, Payload, DEBUG, FAN_OUT, NUM_RECORDS};
 use crate::utils::smart_cell::ENABLE_YIELD;
 
 mod block;
@@ -20,7 +20,18 @@ mod utils;
 mod n_test;
 
 fn main() {
-    make_splash();
+    if DEBUG {
+        println!(">>HLE: {}", hle());
+        // println!(">>size_of::<Block<255, 102, u64, u64>>()) = {}",
+        //          size_of::<Block<255, 102, u64, u64>>());
+        // println!();
+        println!(">>FAN_OUT: {FAN_OUT}\n>>NUM_RECORDS: {NUM_RECORDS}\n>>size_of(BLOCK): {}",
+                 size_of::<Block<FAN_OUT, NUM_RECORDS, Key, Payload>>());
+        println!();
+    }
+    else {
+        make_splash()
+    }
 
     // println!("Size of Node = {}", mem::size_of::<Block<250, 102, u64, u64>>());
     execute_experiments()
