@@ -21,11 +21,16 @@ mod n_test;
 
 fn main() {
     if DEBUG {
-        println!(">>HLE: {}", hle());
-        // println!(">>size_of::<Block<255, 102, u64, u64>>()) = {}",
-        //          size_of::<Block<255, 102, u64, u64>>());
+        println!(">>HLE: \t\t\t{}", hle());
+        // println!(">>size_of::<Block<127, 127, u64, u64>>()) = {}",
+        //          size_of::<Block<127, 127, u64, u64>>());
         // println!();
-        println!(">>FAN_OUT: {FAN_OUT}\n>>NUM_RECORDS: {NUM_RECORDS}\n>>size_of(BLOCK): {}",
+        let block_size = size_of::<Block<FAN_OUT, NUM_RECORDS, Key, Payload>>();
+        let kb = block_size as f32 / 1024f32;
+        println!("\
+        >>FAN_OUT: \t\t{FAN_OUT}\n\
+        >>NUM_RECORDS: \t\t{NUM_RECORDS}\n\
+        >>size_of(BLOCK): \t{} bytes; {kb} kb",
                  size_of::<Block<FAN_OUT, NUM_RECORDS, Key, Payload>>());
         println!();
     }
