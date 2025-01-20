@@ -38,20 +38,17 @@ use crate::record_model::Version;
 use crate::tree::bplus_tree;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
 
-pub fn olap(index: IndexHandler, snapshot: SnapShot, number_olaps: u64) -> JoinHandle<()> {
+pub fn olap(index: IndexHandler, number_olaps: usize) -> Vec<JoinHandle<()>> {
     assert!(index.is_left(),
             "OLAP init failed! Provide an initialized TxManager!");
 
-    spawn(move || if let Either::Left(manager) = index {
-        let mut olap = 0;
-        while number_olaps > olap {
+    (0..number_olaps).map(|_|{
+        let index = index.clone();
+        spawn(move || if let Either::Left(manager) = index {
             let _tx_res = manager.dispatch(CRUDOperation::Range(
-                (manager.min_key..=manager.max_key).into(),
-                snapshot));
-
-            olap += 1;
-        }
-    })
+                (manager.min_key..=manager.max_key).into(), manager.committed_version()));
+        })
+    }).collect()
 }
 
 const CONFIG_PARAMETERS: &'static str = "config.json";
@@ -74,7 +71,7 @@ impl Display for ClockType {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct GroupConfig {
-    olap: Option<(SnapShot, u64)>,
+    olap: Option<usize>,
     protocol: CRUDProtocol,
     clock: ClockType,
     range_start: u64,
@@ -94,7 +91,7 @@ pub struct GroupConfig {
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SubGroupConfig {
-    olap: Option<(SnapShot, u64)>,
+    olap: Option<usize>,
     range_start: u64,
     range_end: u64,
     lambda: f64,
@@ -244,11 +241,11 @@ pub fn execute_experiments() {
             let mut olap_handle = None;
             let mut index_handler = None;
             let target_tx = experiment.total_tx;
-            if let Some((snapshot, halt)) = experiment.olap {
+            if let Some(num_olaps) = experiment.olap {
                 if let Either::Right(protocol) = experiment.index_handler() {
-                    print!("{experiment_id},INIT_OLAP_s{snapshot}_n{halt},{target_tx}");
+                    print!("{experiment_id},INIT_OLAP_n{num_olaps},{target_tx}");
                     index_handler = Some(Either::Left(Arc::new(new_INDEX(protocol))));
-                    olap_handle = Some(olap(index_handler.clone().unwrap(), snapshot, halt));
+                    olap_handle = Some(olap(index_handler.clone().unwrap(), num_olaps));
                 }
             }
             else {
@@ -259,7 +256,10 @@ pub fn execute_experiments() {
                 = start_experiment_by_config(&experiment, index_handler);
 
             if let Some(olap_handle) = olap_handle {
-               olap_handle.join().unwrap();
+                let _ = olap_handle
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap())
+                    .collect::<Vec<_>>();
             }
 
             // drop(olap_handle.take());
@@ -274,9 +274,9 @@ pub fn execute_experiments() {
                     let target_tx = inner_group.total_tx;
                     let mut olap_handle = None;
 
-                    if let Some((snapshot, halt)) = inner_group.olap {
-                        print!("{experiment_id},{subgroup}_OLAP_s{snapshot}_t{halt},{target_tx}");
-                        olap_handle = Some(olap(index_handler.clone(), snapshot, halt));
+                    if let Some(num_olaps) = inner_group.olap {
+                        print!("{experiment_id},{subgroup}_OLAP_n{num_olaps},{target_tx}");
+                        olap_handle = Some(olap(index_handler.clone(), num_olaps));
                     }
                     else {
                         print!("{experiment_id},{subgroup},{target_tx}");
@@ -294,7 +294,10 @@ pub fn execute_experiments() {
                         = chain_experiment_by_config(&inner_group, index_handler.clone());
 
                     if let Some(olap_handle) = olap_handle {
-                        olap_handle.join().unwrap();
+                        let _ = olap_handle
+                            .into_iter()
+                            .map(|handle| handle.join().unwrap())
+                            .collect::<Vec<_>>();
                     }
                     // drop(olap_handle.take());
                     let (h, r) = height_root(&index_handler);
