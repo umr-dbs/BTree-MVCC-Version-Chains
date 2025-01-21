@@ -38,15 +38,16 @@ use crate::record_model::Version;
 use crate::tree::bplus_tree;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
 
-pub fn olap(index: IndexHandler, number_olaps: usize) -> Vec<JoinHandle<()>> {
-    assert!(index.is_left(),
-            "OLAP init failed! Provide an initialized TxManager!");
+pub fn olap(index_handler: IndexHandler, number_olaps: usize) -> Vec<JoinHandle<()>> {
+    let index = index_handler
+        .left()
+        .expect("OLAP init failed! Provide an initialized TxManager!");
 
     (0..number_olaps).map(|_|{
         let index = index.clone();
-        spawn(move || if let Either::Left(manager) = index {
-            let _tx_res = manager.dispatch(CRUDOperation::Range(
-                (manager.min_key..=manager.max_key).into(), manager.committed_version()));
+        spawn(move || {
+            let (_nv, _olap_res) = index.dispatch(CRUDOperation::Range(
+                (index.min_key..=index.max_key).into(), index.committed_version()));
         })
     }).collect()
 }
@@ -233,7 +234,30 @@ pub fn execute_experiments() {
         .fold(groups.len(), |acc, group| acc + group.num_chains());
 
     println!("[Loaded] - Experiments loaded #{total_exps}");
-    println!("experiment_id,chain_id,tx_target,tx_executed,tx_success,tx_fail,time,protocol,clock,range_start,range_end,lambda,gc_enable,threads,insert_ratio,update_ratio,delete_ratio,point_reads_ratio,range_reads_ratio,range_size,log_height,actual_height");
+    println!("experiment_id,\
+    chain_id,\
+    tx_target,\
+    tx_executed,\
+    tx_success,\
+    tx_fail,\
+    time,\
+    protocol,\
+    clock,\
+    range_start,\
+    range_end,\
+    lambda,\
+    gc_enable,\
+    threads,\
+    insert_ratio,\
+    update_ratio,\
+    delete_ratio,\
+    point_reads_ratio,\
+    range_reads_ratio,\
+    range_size,\
+    log_height,\
+    actual_height,\
+    blocks_allocated,\
+    blocks_reused");
     groups
         .into_iter()
         .enumerate()
@@ -256,15 +280,15 @@ pub fn execute_experiments() {
                 = start_experiment_by_config(&experiment, index_handler);
 
             if let Some(olap_handle) = olap_handle {
-                let _ = olap_handle
+                olap_handle
                     .into_iter()
-                    .map(|handle| handle.join().unwrap())
-                    .collect::<Vec<_>>();
+                    .for_each(|handle| handle.join().unwrap());
             }
 
             // drop(olap_handle.take());
             let (h, r) = height_root(&index_handler);
-            println!(",{experiment},{h},{r}");
+            let (alloc, reuse) = block_alloc_reuses(&index_handler);
+            println!(",{experiment},{h},{r},{alloc},{reuse}");
             experiment
                 .chain_groups
                 .into_iter()
@@ -282,26 +306,22 @@ pub fn execute_experiments() {
                         print!("{experiment_id},{subgroup},{target_tx}");
                     }
 
-                    // if let Either::Left(ref m_manager) = index_handler {
-                    //     if inner_group.gc_enable && !m_manager.is_gc_enabled() {
-                    //         m_manager.enable_gc();
-                    //     } else if !inner_group.gc_enable && m_manager.is_gc_enabled() {
-                    //         m_manager.disable_gc();
-                    //     }
-                    // }
+                    if let Either::Left(ref m_manager) = index_handler {
+                        m_manager.block_manager.reset_alloc_reuse_counts();
+                    }
 
                     index_handler
                         = chain_experiment_by_config(&inner_group, index_handler.clone());
 
                     if let Some(olap_handle) = olap_handle {
-                        let _ = olap_handle
+                        olap_handle
                             .into_iter()
-                            .map(|handle| handle.join().unwrap())
-                            .collect::<Vec<_>>();
+                            .for_each(|handle| handle.join().unwrap());
                     }
                     // drop(olap_handle.take());
                     let (h, r) = height_root(&index_handler);
-                    println!(",{},{},{h},{r}", experiment.protocol, inner_group);
+                    let (alloc, reuse) = block_alloc_reuses(&index_handler);
+                    println!(",{},{},{h},{r},{alloc},{reuse}", experiment.protocol, inner_group);
                 });
         })
 }
@@ -613,6 +633,16 @@ pub fn format_insertions(i: usize) -> String {
         i.to_string()
     }
 }
+
+fn block_alloc_reuses(index_handler: &IndexHandler) -> (usize, usize) {
+    if let Either::Left(index) = index_handler {
+        (index.block_manager.alloc_count.load(SeqCst), 0)
+    }
+    else {
+        unreachable!()
+    }
+}
+
 fn height_root(index_handler: &IndexHandler) -> (usize, usize) {
     if let Either::Left(index) = index_handler {
         let log_height = index.root.height() as usize;

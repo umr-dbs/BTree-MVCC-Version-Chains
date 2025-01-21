@@ -2,6 +2,8 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 // use crate::page_model::{AtomicBlockID, BlockID};
 use crate::block::block::Block;
 use crate::page_model::internal_page::InternalPage;
@@ -53,6 +55,7 @@ pub struct BlockManager<
     Payload: Default + Clone,
 > {
     // block_id_counter: AtomicBlockID,
+    pub alloc_count: AtomicUsize,
     _marker: PhantomData<(Key, Payload)>
 }
 
@@ -64,6 +67,7 @@ impl<const FAN_OUT: usize,
     fn clone(&self) -> Self {
         Self {
             // block_id_counter: AtomicBlockID::new(START_BLOCK_ID),
+            alloc_count: AtomicUsize::new(0),
             _marker: PhantomData,
         }
     }
@@ -93,6 +97,10 @@ impl<const FAN_OUT: usize,
     //     self.block_id_counter.fetch_add(1, Ordering::Relaxed)
     // }
 
+    pub fn reset_alloc_reuse_counts(&self) {
+        self.alloc_count.store(0, SeqCst);
+    }
+
     #[inline(always)]
     pub const fn allocation_leaf(&self) -> usize {
         NUM_RECORDS
@@ -108,12 +116,15 @@ impl<const FAN_OUT: usize,
     pub(crate) const fn new() -> Self {
         Self {
             // block_id_counter: AtomicBlockID::new(START_BLOCK_ID),
+            alloc_count: AtomicUsize::new(0),
             _marker: PhantomData,
         }
     }
 
     #[inline(always)]
-    pub(crate) const fn new_empty_leaf(&self) -> Block<FAN_OUT, NUM_RECORDS, Key, Payload> {
+    pub(crate) fn new_empty_leaf(&self) -> Block<FAN_OUT, NUM_RECORDS, Key, Payload> {
+        self.alloc_count.fetch_add(1, Relaxed);
+
         Block {
             // block_id: self.next_block_id(),
             node_data: Node::Leaf(LeafPage::new())
@@ -123,6 +134,8 @@ impl<const FAN_OUT: usize,
     /// Crafts a new aligned Index-Block.
     #[inline(always)]
     pub(crate) fn new_empty_index_block(&self) -> Block<FAN_OUT, NUM_RECORDS, Key, Payload> {
+        self.alloc_count.fetch_add(1, Relaxed);
+
         Block {
             // block_id: self.next_block_id(),
             node_data: Node::Index(InternalPage::new())
