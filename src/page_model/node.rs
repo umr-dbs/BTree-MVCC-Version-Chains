@@ -189,9 +189,9 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline]
-    pub fn delete_key(&mut self, key: Key, del_version: Version) -> Option<Payload> {
+    pub fn delete_key(&mut self, key: Key, del_version: Version) -> Result<Option<Payload>, ()> {
         match self {
-            Node::Leaf(events_page) => events_page
+            Node::Leaf(events_page) => match events_page
                 .as_records()
                 .binary_search_by_key(&key, |event| event.key)
                 .map(|found| events_page
@@ -199,23 +199,30 @@ impl<const FAN_OUT: usize,
                     .get_unchecked_mut(found)
                     .version_list_mut()
                     .delete(del_version))
-                .ok()?,
-            _ => None,
+            {
+                Ok(Some(payload)) => Ok(Some(payload)),
+                Ok(None) => Ok(None),
+                _ => Err(())
+            }
+            _ => Err(())
         }
     }
 
     #[inline]
-    pub fn update_record_point(&mut self, key: Key, payload: Payload, version: Version) -> Option<Payload> {
+    pub fn update_record_point(&mut self, key: Key, payload: Payload, version: Version) -> Result<Option<Payload>, ()> {
         match self {
-            Node::Leaf(events_page) => events_page
+            Node::Leaf(events_page) => match events_page
                 .as_records()
                 .binary_search_by_key(&key, |e| e.key)
                 .map(|found| events_page
                     .as_records_mut()
                     .get_unchecked_mut(found)
                     .append(version, payload))
-                .ok(),
-            _ => None
+            {
+                Ok(payload) => Ok(Some(payload)),
+                _ => Ok(None),
+            }
+            _ => Err(())
         }
     }
 

@@ -4,6 +4,7 @@ use std::mem;
 use std::ops::Deref;
 use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::crud_model::crud_operation::CRUDOperation;
+use crate::crud_model::crud_operation_result::CRUDOperationInnerReason::{KeyAlreadyDeleted, KeyDoesNotExist};
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::record_model::record_point::RecordPoint;
 use crate::record_model::Version;
@@ -32,11 +33,14 @@ impl<const FAN_OUT: usize,
                     = self.next_version();
 
                 (node_visits,
-                 guard.deref_mut()
+                 match guard.deref_mut()
                      .unwrap()
                      .delete_key(key, del_version)
-                     .map(|payload| CRUDOperationResult::Deleted(key, payload, del_version))
-                     .unwrap_or_default())
+                 {
+                     Ok(Some(payload)) => CRUDOperationResult::Deleted(key, payload, del_version),
+                     Ok(None) => CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
+                     Err(..) => CRUDOperationResult::Error
+                 })
             }
             CRUDOperation::Delete(key) => {
                 let (node_visits, guard) = self
@@ -46,11 +50,14 @@ impl<const FAN_OUT: usize,
                     = self.next_version();
 
                 (node_visits,
-                 guard.deref_mut()
+                 match guard.deref_mut()
                      .unwrap()
                      .delete_key(key, del_version)
-                     .map(|payload| CRUDOperationResult::Deleted(key, payload, del_version))
-                     .unwrap_or_default())
+                 {
+                     Ok(Some(payload)) => CRUDOperationResult::Deleted(key, payload, del_version),
+                     Ok(None) => CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
+                     Err(..) => CRUDOperationResult::Error
+                 })
             }
             CRUDOperation::Insert(key, payload) if olc => {
                 let (node_visits, guard) = self
@@ -101,12 +108,18 @@ impl<const FAN_OUT: usize,
 
                 let update_version = self.next_version();
                 if DEBUG_VERIFY {
-                    let res = (node_visits, guard
+                    let res = (node_visits, match guard
                         .deref_mut()
                         .unwrap()
                         .update_record_point(key, payload, update_version)
-                        .map(|old| CRUDOperationResult::Updated(key, old, update_version))
-                        .unwrap_or_default());
+                    {
+                        Ok(Some(payload)) =>
+                            CRUDOperationResult::Updated(key, payload, update_version),
+                        Ok(None) =>
+                            CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
+                        Err(..) =>
+                            CRUDOperationResult::Error
+                    });
 
                     mem::drop(guard);
                     let (_, r)
@@ -120,12 +133,18 @@ impl<const FAN_OUT: usize,
                     res
                 }
                 else {
-                    (node_visits, guard
+                    (node_visits, match guard
                         .deref_mut()
                         .unwrap()
                         .update_record_point(key, payload, update_version)
-                        .map(|old| CRUDOperationResult::Updated(key, old, update_version))
-                        .unwrap_or_default())
+                    {
+                        Ok(Some(payload)) =>
+                            CRUDOperationResult::Updated(key, payload, update_version),
+                        Ok(None) =>
+                            CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
+                        Err(..) =>
+                            CRUDOperationResult::Error
+                    })
                 }
             }
             CRUDOperation::Update(key, payload) => {
@@ -133,11 +152,18 @@ impl<const FAN_OUT: usize,
                     .traversal_write(key);
 
                 let update_version = self.next_version();
-                (node_visits, guard.deref_mut()
+                (node_visits, match guard
+                    .deref_mut()
                     .unwrap()
-                    .update_record_point(key, payload, self.next_version())
-                    .map(|old| CRUDOperationResult::Updated(key, old, update_version))
-                    .unwrap_or_default())
+                    .update_record_point(key, payload, update_version)
+                {
+                    Ok(Some(payload)) =>
+                        CRUDOperationResult::Updated(key, payload, update_version),
+                    Ok(None) =>
+                        CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
+                    Err(..) =>
+                        CRUDOperationResult::Error
+                })
             }
             CRUDOperation::Point(key, version) if olc => match self.traversal_read_olc(key) {
                 (node_visits, leaf_guard) => unsafe {
