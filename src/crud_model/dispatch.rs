@@ -216,7 +216,7 @@ impl<const FAN_OUT: usize,
                                 .version_list()
                                 .find(version)
                                 .map(|found|
-                                    RecordPoint::new(key, found.entry.deref().clone()))
+                                    RecordPoint::new(key, found.payload().clone()))
                                 .unwrap_or_default()
                         })
                         .into())

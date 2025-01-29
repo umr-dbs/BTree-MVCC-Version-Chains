@@ -38,8 +38,12 @@ fn main() {
         make_splash()
     }
 
-    // println!("Size of Node = {}", mem::size_of::<Block<250, 102, u64, u64>>());
-    execute_experiments()
+    // println!("{}", serde_json::to_string(&ORWC {
+    //     write_level: 1f32,
+    //     write_attempt: 4
+    // }).unwrap());
+    println!("Size of Node = {}", mem::size_of::<Block<FAN_OUT, NUM_RECORDS, u64, u64>>());
+    // execute_experiments()
 }
 
 /// Essential function.

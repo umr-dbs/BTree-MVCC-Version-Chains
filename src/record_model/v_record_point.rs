@@ -38,7 +38,7 @@ impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> Clone for Versi
 
 impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> VersionedRecordPoint<Key, Payload> {
     #[inline(always)]
-    pub const fn new(key: Key, version: Version, payload: Payload) -> Self {
+    pub fn new(key: Key, version: Version, payload: Payload) -> Self {
         Self {
             key,
             version_list: VersionList::new(version, payload)
