@@ -16,7 +16,7 @@ pub type INDEX = BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
 use crossbeam_channel::{bounded, Sender, TryRecvError};
 use itertools::{Either, Itertools};
 use rand::rngs::ThreadRng;
-use rand::{thread_rng, Rng};
+use rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::fs::OpenOptions;
@@ -28,7 +28,10 @@ use std::{mem, thread};
 use std::os::unix::thread::JoinHandleExt;
 use std::thread::{spawn, JoinHandle};
 use std::time::{Duration, SystemTime};
-use rand::distributions::Alphanumeric;
+use rand::distr::{Alphanumeric, Uniform};
+use rand::prelude::StdRng;
+use rand_distr::Zipf;
+use rand_distr::Distribution;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
@@ -38,16 +41,28 @@ use crate::record_model::Version;
 use crate::tree::bplus_tree;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
 
-pub fn olap(index_handler: IndexHandler, number_olaps: usize) -> Vec<JoinHandle<()>> {
+pub fn olap(index_handler: IndexHandler, number_olaps: usize, n: usize) -> Vec<JoinHandle<()>> {
     let index = index_handler
         .left()
         .expect("OLAP init failed! Provide an initialized TxManager!");
 
-    (0..number_olaps).map(|_|{
+
+    (0..number_olaps).map(|_| {
         let index = index.clone();
         spawn(move || {
-            let (_nv, _olap_res) = index.dispatch(CRUDOperation::Range(
-                (index.min_key..=index.max_key).into(), index.committed_version()));
+            let si
+                = index.committed_version();
+
+            let wait_maker=
+                Uniform::new(1000_usize, n).unwrap();
+
+            let range_max
+                = wait_maker.sample(&mut rand::rng()) as Key;
+
+            thread::sleep(Duration::from_micros(wait_maker.sample(&mut rand::rng()) as u64));
+            let _crud_res = index.dispatch(CRUDOperation::Range(
+                (index.min_key..=range_max).into(),
+                si));
         })
     }).collect()
 }
@@ -75,9 +90,7 @@ pub struct GroupConfig {
     olap: Option<usize>,
     protocol: CRUDProtocol,
     clock: ClockType,
-    range_start: u64,
-    range_end: u64,
-    lambda: f64,
+    skew: f64,
     gc_enable: bool,
     threads: usize,
     total_tx: usize,
@@ -93,9 +106,7 @@ pub struct GroupConfig {
 #[derive(Clone, Serialize, Deserialize)]
 pub struct SubGroupConfig {
     olap: Option<usize>,
-    range_start: u64,
-    range_end: u64,
-    lambda: f64,
+    skew: f64,
     gc_enable: bool,
     threads: usize,
     total_tx: usize,
@@ -149,9 +160,7 @@ impl Default for GroupConfig {
             chain_groups: vec![],
             protocol: Default::default(),
             clock: ClockType::FREE,
-            range_start: 0,
-            range_end: u64::MAX,
-            lambda: 0.1,
+            skew: 1f64,
             gc_enable: false,
             threads: 1,
             total_tx: 10_000_000,
@@ -169,12 +178,10 @@ impl Display for GroupConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{}",
             self.protocol,
             "_",
-            self.range_start,
-            self.range_end,
-            self.lambda,
+            self.skew,
             "_",
             self.threads,
             self.insert_ratio,
@@ -191,11 +198,9 @@ impl Display for SubGroupConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{}",
             "_",
-            self.range_start,
-            self.range_end,
-            self.lambda,
+            self.skew,
             "_",
             self.threads,
             self.insert_ratio,
@@ -243,9 +248,7 @@ pub fn execute_experiments() {
     time,\
     protocol,\
     clock,\
-    range_start,\
-    range_end,\
-    lambda,\
+    skew,
     gc_enable,\
     threads,\
     insert_ratio,\
@@ -264,16 +267,16 @@ pub fn execute_experiments() {
         .for_each(|(experiment_id, experiment)| {
             let mut olap_handle = None;
             let mut index_handler = None;
-            let target_tx = experiment.total_tx;
+            let init_target_tx = experiment.total_tx;
             if let Some(num_olaps) = experiment.olap {
                 if let Either::Right(protocol) = experiment.index_handler() {
-                    print!("{experiment_id},INIT_OLAP_n{num_olaps},{target_tx}");
+                    print!("{experiment_id},INIT_OLAP_n{num_olaps},{init_target_tx}");
                     index_handler = Some(Either::Left(Arc::new(new_INDEX(protocol))));
-                    olap_handle = Some(olap(index_handler.clone().unwrap(), num_olaps));
+                    olap_handle = Some(olap(index_handler.clone().unwrap(), num_olaps, init_target_tx));
                 }
             }
             else {
-                print!("{experiment_id},INIT,{target_tx}");
+                print!("{experiment_id},INIT,{init_target_tx}");
             }
 
             let mut index_handler
@@ -300,7 +303,7 @@ pub fn execute_experiments() {
 
                     if let Some(num_olaps) = inner_group.olap {
                         print!("{experiment_id},{subgroup}_OLAP_n{num_olaps},{target_tx}");
-                        olap_handle = Some(olap(index_handler.clone(), num_olaps));
+                        olap_handle = Some(olap(index_handler.clone(), num_olaps, init_target_tx));
                     }
                     else {
                         print!("{experiment_id},{subgroup},{target_tx}");
@@ -331,9 +334,7 @@ fn start_experiment_by_config(config: &GroupConfig, index_handler: Option<IndexH
         config.threads,
         index_handler.unwrap_or(config.index_handler()),
         config.gc_enable,
-        config.lambda,
-        config.range_start,
-        config.range_end,
+        config.skew,
         config.insert_ratio,
         config.update_ratio,
         config.delete_ratio,
@@ -349,9 +350,7 @@ fn chain_experiment_by_config(config: &SubGroupConfig, index_handler: IndexHandl
         config.threads,
         index_handler,
         config.gc_enable,
-        config.lambda,
-        config.range_start,
-        config.range_end,
+        config.skew,
         config.insert_ratio,
         config.update_ratio,
         config.delete_ratio,
@@ -366,9 +365,7 @@ fn run_experiment_with_params(
     threads: usize,
     index: IndexHandler,
     gc_enable: bool,
-    lambda: f64,
-    range_start: u64,
-    range_end: u64,
+    skew: f64,
     insert_ratio: usize,
     update_ratio: usize,
     delete_ratio: usize,
@@ -384,9 +381,7 @@ fn run_experiment_with_params(
         threads,
         index,
         gc_enable,
-        lambda,
-        range_start,
-        range_end,
+        skew,
         insert_ratio,
         update_ratio,
         delete_ratio,
@@ -394,6 +389,7 @@ fn run_experiment_with_params(
         range_reads_ratio,
         range_size,
         total_tx_counter.clone(),
+        total_tx
     );
 
     while total_tx_counter.load(SeqCst) < total_tx {
@@ -446,8 +442,8 @@ pub const PAYLOAD_STR_LEN_MAX: usize = 7078;
 pub const PAYLOAD_ATTR_STR_COUNT: usize = 67;
 
 fn rnd_str(len_min: usize, len_max: usize) -> String {
-    let len = thread_rng().gen_range(len_min..=len_max);
-    thread_rng()
+    let len = rand::rng().random_range(len_min..=len_max);
+    rand::rng()
         .sample_iter(&Alphanumeric)
         .take(len)
         .map(char::from)
@@ -502,9 +498,7 @@ fn experiment(
     num_threads: usize,
     index_handler: IndexHandler,
     gc_enable: bool,
-    lambda: f64,
-    range_start: u64,
-    range_end: u64,
+    skew: f64,
     insert_ratio: usize,
     update_ratio: usize,
     delete_ratio: usize,
@@ -512,6 +506,7 @@ fn experiment(
     range_reads_ratio: usize,
     range_size: u64,
     total_tx: Arc<AtomicUsize>,
+    n: usize
 ) -> (
     IndexHandler,
     Vec<(JoinHandle<(usize, usize, u128)>, Sender<()>)>,
@@ -523,9 +518,9 @@ fn experiment(
     );
 
     #[inline(always)]
-    fn gen_key(i: u64, range_start: u64, range_end: u64, lambda: f64, rnd: &mut ThreadRng) -> u64 {
+    fn gen_key(i: u64, range_start: u64, range_end: u64, lambda: f64, rnd: &mut StdRng) -> u64 {
         #[inline(always)]
-        fn sample_next(lambda: f64, rnd: &mut ThreadRng) -> f64 {
+        fn sample_next(lambda: f64, rnd: &mut StdRng) -> f64 {
             let num = rnd.gen_range(0_f64..1_f64);
 
             (1_f64 - num).ln().div(-lambda)
@@ -558,15 +553,15 @@ fn experiment(
 
             // tx_success, tx_error, time_spent
             let handle = spawn(move || {
-                let mut rng = thread_rng();
-
-                let mut generator = || gen_key(range_end, range_start, range_end, lambda, &mut rng);
+                let mut rng = rand::rng();
+                let mut zipf = Zipf::new(n as f64, skew).unwrap();
+                let mut generator = || zipf.sample(&mut rng) as Key;
 
                 let (mut tx_success, mut tx_error, start_execution_time) =
                     (0usize, 0usize, SystemTime::now());
 
                 let local_tx = |key: Key| -> CRUDOperation<Key, Payload> {
-                    let random_number = thread_rng().gen_range(0..100);
+                    let random_number = rand::rng().random_range(0..100);
 
                     if random_number < insert_ratio {
                         CRUDOperation::Insert(key, Payload::default())
