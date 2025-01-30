@@ -260,11 +260,13 @@ pub fn execute_experiments() {
     log_height,\
     actual_height,\
     blocks_allocated,\
-    blocks_reused");
+    blocks_reused,\
+    olap_time");
     groups
         .into_iter()
         .enumerate()
         .for_each(|(experiment_id, experiment)| {
+            let olap_start_time = SystemTime::now();
             let mut olap_handle = None;
             let mut index_handler = None;
             let init_target_tx = experiment.total_tx;
@@ -288,10 +290,13 @@ pub fn execute_experiments() {
                     .for_each(|handle| handle.join().unwrap());
             }
 
+            let olap_time = SystemTime::now()
+                .duration_since(olap_start_time).unwrap().as_millis();
+
             // drop(olap_handle.take());
             let (h, r) = height_root(&index_handler);
             let (alloc, reuse) = block_alloc_reuses(&index_handler);
-            println!(",{experiment},{h},{r},{alloc},{reuse}");
+            println!(",{experiment},{h},{r},{alloc},{reuse},{olap_time}");
             experiment
                 .chain_groups
                 .into_iter()
@@ -300,6 +305,7 @@ pub fn execute_experiments() {
                     let subgroup = num + 1;
                     let target_tx = inner_group.total_tx;
                     let mut olap_handle = None;
+                    let olap_start_time = SystemTime::now();
 
                     if let Some(num_olaps) = inner_group.olap {
                         print!("{experiment_id},{subgroup}_OLAP_n{num_olaps},{target_tx}");
@@ -322,9 +328,12 @@ pub fn execute_experiments() {
                             .for_each(|handle| handle.join().unwrap());
                     }
                     // drop(olap_handle.take());
+                    let olap_time = SystemTime::now()
+                        .duration_since(olap_start_time).unwrap().as_millis();
+                    
                     let (h, r) = height_root(&index_handler);
                     let (alloc, reuse) = block_alloc_reuses(&index_handler);
-                    println!(",{},{},{h},{r},{alloc},{reuse}", experiment.protocol, inner_group);
+                    println!(",{},{},{h},{r},{alloc},{reuse},{olap_time}", experiment.protocol, inner_group);
                 });
         })
 }
