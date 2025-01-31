@@ -42,8 +42,8 @@ fn main() {
     //     write_level: 1f32,
     //     write_attempt: 4
     // }).unwrap());
-    println!("Size of Node = {}", mem::size_of::<Block<FAN_OUT, NUM_RECORDS, u64, u64>>());
-    // execute_experiments()
+    // println!("Size of Node = {}", mem::size_of::<Block<FAN_OUT, NUM_RECORDS, u64, u64>>());
+    execute_experiments()
 }
 
 /// Essential function.
