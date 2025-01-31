@@ -305,11 +305,12 @@ pub fn execute_experiments() {
                 let olap_data_result = olap_handle
                     .into_iter()
                     .flat_map(|jh| jh.join().unwrap())
-                    .collect_vec();
-
-                olap_time = SystemTime::now()
-                    .duration_since(olap_start_time).unwrap().as_millis();
-
+                    .map(|t@(.., time)| {
+                        olap_time += time;
+                        t
+                    }).collect_vec();
+                olap_time /= 1_000_000;
+                
                 let _nc = fs::remove_file(format!("ll_olap_{experiment_id}_INIT.csv"));
                 let mut olap_file = fs::OpenOptions::new()
                     .append(true)
@@ -348,7 +349,7 @@ pub fn execute_experiments() {
                         print!("{experiment_id},{subgroup},{target_tx}");
                         olap_handle = Some(run_olaps(
                             index_handler.clone(), inner_group.olap_workers,
-                            inner_group.olaps_tx_per_worker, 
+                            inner_group.olaps_tx_per_worker,
                             init_target_tx));
                     }
                     else {
@@ -367,11 +368,11 @@ pub fn execute_experiments() {
                         let olap_data_result = olap_handle
                             .into_iter()
                             .flat_map(|jh| jh.join().unwrap())
-                            .collect_vec();
-
-                        olap_time = SystemTime::now()
-                            .duration_since(olap_start_time).unwrap().as_millis();
-
+                            .map(|t@(.., time)| {
+                                olap_time += time;
+                                t
+                            }).collect_vec();
+                        olap_time /= 1_000_000;
                         let _nc = fs::remove_file(format!("ll_olap_{experiment_id}_{subgroup}.csv"));
                         let mut olap_file = fs::OpenOptions::new()
                             .append(true)
