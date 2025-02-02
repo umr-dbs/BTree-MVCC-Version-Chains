@@ -40,6 +40,39 @@ use crate::locking::locking_strategy::CRUDProtocol;
 use crate::page_model::node::Node;
 use crate::record_model::Version;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
+pub enum Sampler {
+    Uniform(Uniform<u64>, ThreadRng),
+    Zipf(Zipf<f64>, ThreadRng),
+}
+
+impl Sampler {
+    fn new(skew: f64, n: Key) -> Self {
+        if skew == 0_f64 {
+            Sampler::Uniform(Uniform::new_inclusive(1, n).unwrap(), rand::rng())
+        }
+        else {
+            Sampler::Zipf(Zipf::new(n as f64, skew).unwrap(), rand::rng())
+        }
+    }
+    #[inline(always)]
+    fn sample(&mut self) -> Key {
+        match self {
+            Sampler::Uniform(dist, rng) =>
+                dist.sample(rng) as Key,
+            Sampler::Zipf(dist, rng) =>
+                dist.sample(rng) as Key,
+        }
+    }
+}
+
+impl Display for Sampler {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Sampler::Uniform(..) => write!(f, "Uniform"),
+            Sampler::Zipf(..) => write!(f, "Zipf"),
+        }
+    }
+}
 
 pub fn run_olaps(handler: IndexHandler, number_workers: usize, number_olaps_per_worker: usize, n: usize)
                  -> Vec<JoinHandle<Vec<(SnapShot, u64, u128)>>>
@@ -279,7 +312,6 @@ pub fn execute_experiments() {
         .into_iter()
         .enumerate()
         .for_each(|(experiment_id, experiment)| {
-            let olap_start_time = SystemTime::now();
             let mut olap_handle = None;
             let mut index_handler = None;
             let init_target_tx = experiment.total_tx;
@@ -343,7 +375,6 @@ pub fn execute_experiments() {
                     let subgroup = num + 1;
                     let target_tx = inner_group.total_tx;
                     let mut olap_handle = None;
-                    let olap_start_time = SystemTime::now();
 
                     if inner_group.olap_workers > 0 {
                         print!("{experiment_id},{subgroup},{target_tx}");
@@ -622,16 +653,16 @@ fn experiment(
 
             // tx_success, tx_error, time_spent
             let handle = spawn(move || {
-                let mut rng = rand::rng();
-                let mut zipf = Zipf::new(n as f64, skew).unwrap();
-                let mut generator = || zipf.sample(&mut rng) as Key;
+                let mut sampler
+                    = Sampler::new(skew, n as Key);
 
                 let (mut tx_success, mut tx_error, start_execution_time) =
                     (0usize, 0usize, SystemTime::now());
 
-                let local_tx = |key: Key| -> CRUDOperation<Key, Payload> {
-                    let random_number = rand::rng().random_range(0..100);
+                let random_number 
+                    = rand::rng().random_range(0..100);
 
+                let local_tx = move |key: Key| -> CRUDOperation<Key, Payload> {
                     if random_number < insert_ratio {
                         CRUDOperation::Insert(key, Payload::default())
                     } else if random_number < insert_ratio + points_reads_ratio {
@@ -657,7 +688,7 @@ fn experiment(
                         Err(TryRecvError::Disconnected) => break,
                         _ => {
                             let next
-                                = local_tx(generator());
+                                = local_tx(sampler.sample());
 
                             match manager.dispatch(next) {
                                 (_nv, CRUDOperationResult::Error) => tx_error += 1,
