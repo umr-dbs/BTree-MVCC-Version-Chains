@@ -48,7 +48,7 @@ pub enum Sampler {
 impl Sampler {
     fn new(skew: f64, n: Key) -> Self {
         if skew == 0_f64 {
-            Sampler::Uniform(Uniform::new_inclusive(1, n).unwrap(), rand::rng())
+            Sampler::Uniform(Uniform::new(0, n).unwrap(), rand::rng())
         }
         else {
             Sampler::Zipf(Zipf::new(n as f64, skew).unwrap(), rand::rng())
@@ -89,12 +89,12 @@ pub fn olap(index_handler: IndexHandler, number_olaps: usize, n: usize) -> JoinH
 
     spawn(move || {
         let uni_form
-            = Uniform::new_inclusive(1_usize, n).unwrap();
+            = Uniform::new(0_usize, n).unwrap();
 
+        let range_max
+            = uni_form.sample(&mut rand::rng()) as Key;
+        
         (0..number_olaps).map(|_| {
-            let range_max
-                = uni_form.sample(&mut rand::rng()) as Key;
-
             thread::sleep(Duration::from_millis(
                 rand::random_range(1u64..100u64)));
 
