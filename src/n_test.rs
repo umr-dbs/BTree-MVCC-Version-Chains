@@ -292,7 +292,7 @@ pub fn execute_experiments() {
     time,\
     protocol,\
     clock,\
-    skew,
+    skew,\
     gc_enable,\
     threads,\
     insert_ratio,\
