@@ -75,14 +75,20 @@ impl Display for Sampler {
 }
 
 pub fn run_olaps(handler: IndexHandler, number_workers: usize, number_olaps_per_worker: usize, n: usize)
-                 -> Vec<JoinHandle<Vec<(SnapShot, u64, u128)>>>
+                 -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, SleepTime)>>>
 {
-    (0..number_olaps_per_worker)
-        .map(|_| olap(handler.clone(), number_workers, n))
+    (1u64..=number_olaps_per_worker as u64)
+        .rev()
+        .map(|i| olap(i, handler.clone(), number_workers, n))
         .collect()
 }
 
-pub fn olap(index_handler: IndexHandler, number_olaps: usize, n: usize) -> JoinHandle<Vec<(SnapShot, u64, u128)>> {
+type SleepTime = u64;
+type RangeMax = Key;
+type OlapTime = u128;
+
+pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: usize)
+    -> JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, SleepTime)>> {
     let index = index_handler
         .left()
         .expect("OLAP init failed! Provide an initialized TxManager!");
@@ -90,20 +96,26 @@ pub fn olap(index_handler: IndexHandler, number_olaps: usize, n: usize) -> JoinH
     spawn(move || {
         let uni_form
             = Uniform::new(0_usize, n).unwrap();
-
-        let range_max
-            = uni_form.sample(&mut rand::rng()) as Key;
         
-        (0..number_olaps).map(|_| {
-            thread::sleep(Duration::from_millis(
-                rand::random_range(1u64..100u64)));
-
+        (0u64..number_olaps as u64).map(|olap| {
             let si = index.committed_version() as Key;
+
+            let range_max
+                = uni_form.sample(&mut rand::rng()) as RangeMax;
+
+            let sleep_time
+                = rand::random_range(olap..(olap+olap_id)*5u64);
+
+            thread::sleep(Duration::from_millis(sleep_time));
+
             let time_start = SystemTime::now();
             let _crud_res = index.dispatch(CRUDOperation::Range(
                 (index.min_key..=range_max).into(),
                 si));
-            (si, range_max, SystemTime::now().duration_since(time_start).unwrap().as_nanos())
+            (si,
+             range_max,
+             SystemTime::now().duration_since(time_start).unwrap().as_nanos(),
+            sleep_time)
         }).collect_vec()
     })
 }
@@ -307,7 +319,9 @@ pub fn execute_experiments() {
     blocks_reused,\
     olaps_total_time,\
     olaps_workers,\
-    olaps_per_worker");
+    olaps_per_worker,\
+    olaps_total_sleep_time,\
+    total_running_time");
     groups
         .into_iter()
         .enumerate()
@@ -315,6 +329,8 @@ pub fn execute_experiments() {
             let mut olap_handle = None;
             let mut index_handler = None;
             let init_target_tx = experiment.total_tx;
+            let mut start_time = SystemTime::now();
+            let mut total_running_time = 0u128;
             if experiment.olap_workers > 0 {
                 if let Either::Right(protocol) = experiment.index_handler() {
                     print!("{experiment_id},INIT,{init_target_tx}");
@@ -332,16 +348,24 @@ pub fn execute_experiments() {
             let mut index_handler
                 = start_experiment_by_config(&experiment, index_handler);
 
-            let mut olap_time = 0;
+            let mut total_olap_time = 0;
+            let mut total_olap_sleep_time = 0;
             if let Some(olap_handle) = olap_handle {
                 let olap_data_result = olap_handle
                     .into_iter()
                     .flat_map(|jh| jh.join().unwrap())
-                    .map(|t@(.., time)| {
-                        olap_time += time;
+                    .map(|t@(.., olap_time, olap_sleep_time)| {
+                        total_olap_time += olap_time;
+                        total_olap_sleep_time += olap_sleep_time;
                         t
                     }).collect_vec();
-                olap_time /= 1_000_000;
+
+                total_running_time = SystemTime::now()
+                    .duration_since(start_time)
+                    .unwrap()
+                    .as_millis();
+
+                total_olap_time /= 1_000_000;
                 
                 let _nc = fs::remove_file(format!("ll_olap_{experiment_id}_INIT.csv"));
                 let mut olap_file = fs::OpenOptions::new()
@@ -352,7 +376,7 @@ pub fn execute_experiments() {
                     .unwrap();
 
                 olap_file.write_all(b"snapshot,range_end,latency\n").unwrap();
-                for (si, range_max, olap_latency) in olap_data_result {
+                for (si, range_max, olap_latency, _) in olap_data_result {
                     olap_file.write_all(format!("\
                                       {si},\
                                       {range_max},\
@@ -365,8 +389,9 @@ pub fn execute_experiments() {
             let (alloc, reuse) = block_alloc_reuses(&index_handler);
             let (olap_w, olaps_per_w)
                 = (experiment.olap_workers, experiment.olaps_tx_per_worker);
-            println!(",{experiment},{h},{r},{alloc},{reuse},{olap_time},{olap_w},{olaps_per_w}");
 
+            println!(",{experiment},{h},{r},{alloc},{reuse},\
+            {total_olap_time},{olap_w},{olaps_per_w},{total_olap_sleep_time},{total_running_time}");
             experiment
                 .chain_groups
                 .into_iter()
@@ -391,19 +416,26 @@ pub fn execute_experiments() {
                         m_manager.block_manager.reset_alloc_reuse_counts();
                     }
 
+                    start_time = SystemTime::now();
                     index_handler
                         = chain_experiment_by_config(&inner_group, index_handler.clone());
 
-                    let mut olap_time = 0;
+                    let mut total_olap_time = 0;
+                    let mut total_olap_sleep_time = 0;
                     if let Some(olap_handle) = olap_handle {
                         let olap_data_result = olap_handle
                             .into_iter()
                             .flat_map(|jh| jh.join().unwrap())
-                            .map(|t@(.., time)| {
-                                olap_time += time;
+                            .map(|t@(.., olap_time, olap_sleep_time)| {
+                                total_olap_time += olap_time;
+                                total_olap_sleep_time += olap_sleep_time;
                                 t
                             }).collect_vec();
-                        olap_time /= 1_000_000;
+
+                        total_running_time
+                            = SystemTime::now().duration_since(start_time).unwrap().as_millis();
+
+                        total_olap_time /= 1_000_000;
                         let _nc = fs::remove_file(format!("ll_olap_{experiment_id}_{subgroup}.csv"));
                         let mut olap_file = fs::OpenOptions::new()
                             .append(true)
@@ -413,7 +445,7 @@ pub fn execute_experiments() {
                             .unwrap();
 
                         olap_file.write_all(b"snapshot,range_end,latency\n").unwrap();
-                        for (si, range_max, olap_latency) in olap_data_result {
+                        for (si, range_max, olap_latency, _) in olap_data_result {
                             olap_file.write_all(format!("\
                             {si},{range_max},{olap_latency}\n").as_bytes()).unwrap();
                         }
@@ -424,7 +456,13 @@ pub fn execute_experiments() {
                     let (alloc, reuse) = block_alloc_reuses(&index_handler);
                     let (olap_w, olaps_per_w)
                         = (inner_group.olap_workers, inner_group.olaps_tx_per_worker);
-                    println!(",{},{},{h},{r},{alloc},{reuse},{olap_time},{olap_w},{olaps_per_w}", experiment.protocol, inner_group);
+
+
+                    println!(",{},{},{},{h},{r},{alloc},{reuse},\
+                    {total_olap_time},{olap_w},{olaps_per_w},{total_olap_sleep_time},{total_running_time}",
+                             experiment.protocol,
+                             experiment.clock,
+                             inner_group);
                 });
         })
 }
