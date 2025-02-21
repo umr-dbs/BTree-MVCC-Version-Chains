@@ -77,10 +77,14 @@ impl Display for Sampler {
 pub fn run_olaps(handler: IndexHandler, number_workers: usize, number_olaps_per_worker: usize, n: usize)
                  -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, SleepTime)>>>
 {
-    (1u64..=number_olaps_per_worker as u64)
-        .rev()
-        .map(|i| olap(i, handler.clone(), number_workers, n))
-        .collect()
+    let mut handles
+        = Vec::with_capacity(number_workers);
+
+    for i in 1..=number_workers as u64 {
+        handles.push(olap(i, handler.clone(), number_olaps_per_worker, n));
+    }
+
+    handles
 }
 
 type SleepTime = u64;
@@ -97,7 +101,10 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
         let uni_form
             = Uniform::new(0_usize, n).unwrap();
         
-        (0u64..number_olaps as u64).map(|olap| {
+        let mut olap_res
+            = Vec::with_capacity(number_olaps);
+
+        for olap in 0..number_olaps as u64 {
             let si = index.committed_version() as Key;
 
             let range_max
@@ -112,11 +119,16 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
             let _crud_res = index.dispatch(CRUDOperation::Range(
                 (index.min_key..=range_max).into(),
                 si));
-            (si,
-             range_max,
-             SystemTime::now().duration_since(time_start).unwrap().as_nanos(),
-            sleep_time)
-        }).collect_vec()
+            
+            olap_res.push( 
+                (si, 
+                 range_max, 
+                 SystemTime::now().duration_since(time_start).unwrap().as_nanos(), 
+                 sleep_time)
+            );
+        }
+        
+        olap_res
     })
 }
 
