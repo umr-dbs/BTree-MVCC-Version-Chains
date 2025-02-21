@@ -254,8 +254,7 @@ impl Display for SubGroupConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{},{},{},{},{},{},{},{},{},{}",
-            "_",
+            "{},{},{},{},{},{},{},{},{}",
             self.skew,
             "_",
             self.threads,
