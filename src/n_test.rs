@@ -74,14 +74,18 @@ impl Display for Sampler {
     }
 }
 
-pub fn run_olaps(handler: IndexHandler, number_workers: usize, number_olaps_per_worker: usize, n: usize)
-                 -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, SleepTime)>>>
+pub fn run_olaps(handler: IndexHandler, 
+                 number_workers: usize,
+                 number_olaps_per_worker: usize,
+                 n: usize,
+                 current_committed: Version
+) -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, SleepTime)>>>
 {
     let mut handles
         = Vec::with_capacity(number_workers);
 
     for i in 1..=number_workers as u64 {
-        handles.push(olap(i, handler.clone(), number_olaps_per_worker, n));
+        handles.push(olap(i, handler.clone(), number_olaps_per_worker, n, current_committed));
     }
 
     handles
@@ -91,7 +95,7 @@ type SleepTime = u64;
 type RangeMax = Key;
 type OlapTime = u128;
 
-pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: usize)
+pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: usize, current_committed: Version)
     -> JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, SleepTime)>> {
     let index = index_handler
         .left()
@@ -105,13 +109,14 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
             = Vec::with_capacity(number_olaps);
 
         for olap in 0..number_olaps as u64 {
-            let si = index.committed_version() as Key;
-
+            let si = index.committed_version();
+            let si = rand::random_range(current_committed..=si);
+            
             let range_max
                 = uni_form.sample(&mut rand::rng()) as RangeMax;
 
             let sleep_time
-                = rand::random_range(olap..(olap+olap_id)*5u64);
+                = rand::random_range(olap..(olap+olap_id)*1u64);
 
             thread::sleep(Duration::from_millis(sleep_time));
 
@@ -359,7 +364,7 @@ pub fn execute_experiments() {
                     olap_handle = Some(run_olaps(index_handler.clone().unwrap(),
                                                  experiment.olap_workers,
                                                  experiment.olaps_tx_per_worker,
-                                                 init_target_tx));
+                                                 init_target_tx, 0));
                 }
             }
             else {
@@ -425,8 +430,18 @@ pub fn execute_experiments() {
                         .unwrap();
                 }
             }
-  
-            let mut index_handler = index_handler.unwrap();
+            else {
+                terminate_workload.map(|shutdown| shutdown.store(true, SeqCst));
+                index_handler = Some(sp_index_handler.join().unwrap());
+                total_running_time = SystemTime::now()
+                    .duration_since(start_time)
+                    .unwrap()
+                    .as_millis();
+            }
+
+            let mut index_handler
+                = index_handler.unwrap();
+            
             let (h, r) = height_root(&index_handler);
             let (alloc, reuse) = block_alloc_reuses(&index_handler);
             let (olap_w, olaps_per_w, olaps_joint_workload)
@@ -445,10 +460,11 @@ pub fn execute_experiments() {
 
                     if inner_group.olap_workers > 0 {
                         print!("{experiment_id},{subgroup},{target_tx}");
+                        let si = index_handler.as_ref().left().unwrap().committed_version();
                         olap_handle = Some(run_olaps(
                             index_handler.clone(), inner_group.olap_workers,
                             inner_group.olaps_tx_per_worker,
-                            init_target_tx));
+                            init_target_tx, si));
                     }
                     else {
                         print!("{experiment_id},{subgroup},{target_tx}");
@@ -510,6 +526,14 @@ pub fn execute_experiments() {
                             olap_file.write_all(format!("\
                             {si},{t_sleep},{range_max},{olap_latency}\n").as_bytes()).unwrap();
                         }
+                    }
+                    else {
+                        terminate_workload.map(|shutdown| shutdown.store(true, SeqCst));
+                        index_handler = sp_index_handler.join().unwrap();
+                        total_running_time = SystemTime::now()
+                            .duration_since(start_time)
+                            .unwrap()
+                            .as_millis();
                     }
                     // drop(olap_handle.take());
                     
