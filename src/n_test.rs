@@ -79,24 +79,24 @@ pub fn run_olaps(handler: IndexHandler,
                  number_olaps_per_worker: usize,
                  n: usize,
                  current_committed: Version
-) -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, SleepTime)>>>
+) -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, CurrentVersionSI)>>>
 {
     let mut handles
         = Vec::with_capacity(number_workers);
 
     for i in 1..=number_workers as u64 {
-        handles.push(olap(i, handler.clone(), number_olaps_per_worker, n, current_committed));
+        handles.push(olap(i, handler.clone(), number_olaps_per_worker, n));
     }
 
     handles
 }
 
-type SleepTime = u64;
+type CurrentVersionSI = SnapShot;
 type RangeMax = Key;
 type OlapTime = u128;
 
-pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: usize, current_committed: Version)
-    -> JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, SleepTime)>> {
+pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: usize)
+    -> JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, CurrentVersionSI)>> {
     let index = index_handler
         .left()
         .expect("OLAP init failed! Provide an initialized TxManager!");
@@ -108,17 +108,15 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
         let mut olap_res
             = Vec::with_capacity(number_olaps);
 
-        for olap in 0..number_olaps as u64 {
-            let si = index.committed_version();
-            let si = rand::random_range(current_committed..=si);
+        for _ in 0..number_olaps as u64 {
+            let current_version
+                = index.committed_version();
+
+            let si
+                = rand::random_range(Version::MIN..=current_version);
             
             let range_max
                 = uni_form.sample(&mut rand::rng()) as RangeMax;
-
-            let sleep_time
-                = rand::random_range(olap..(olap+olap_id)*1u64);
-
-            thread::sleep(Duration::from_millis(sleep_time));
 
             let time_start = SystemTime::now();
             let _crud_res = index.dispatch(CRUDOperation::Range(
@@ -128,8 +126,8 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
             olap_res.push( 
                 (si, 
                  range_max, 
-                 SystemTime::now().duration_since(time_start).unwrap().as_nanos(), 
-                 sleep_time)
+                 SystemTime::now().duration_since(time_start).unwrap().as_nanos(),
+                 current_version)
             );
         }
         
@@ -409,8 +407,8 @@ pub fn execute_experiments() {
                     .as_millis();
                
                 total_olap_time /= 1_000_000;
-                avg_olap_sleep_time /= experiment.olap_workers as SleepTime;
-                avg_olap_sleep_time /= experiment.olaps_tx_per_worker as SleepTime;
+                avg_olap_sleep_time /= experiment.olap_workers as CurrentVersionSI;
+                avg_olap_sleep_time /= experiment.olaps_tx_per_worker as CurrentVersionSI;
 
                 let _nc = fs::remove_file(format!("ll_olap_{experiment_id}_INIT.csv"));
                 let mut olap_file = fs::OpenOptions::new()
@@ -420,7 +418,7 @@ pub fn execute_experiments() {
                     .open(format!("ll_olap_{experiment_id}_INIT.csv"))
                     .unwrap();
 
-                olap_file.write_all(b"snapshot,sleep_time,range_end,latency\n").unwrap();
+                olap_file.write_all(b"target_snapshot,current_snapshot,range_end,latency\n").unwrap();
                 for (si, range_max, olap_latency, t_sleep) in olap_data_result {
                     olap_file.write_all(format!("\
                                       {si},\
@@ -510,8 +508,8 @@ pub fn execute_experiments() {
                             = SystemTime::now().duration_since(start_time).unwrap().as_millis();
 
                         total_olap_time /= 1_000_000;
-                        avg_olap_sleep_time /= inner_group.olap_workers as SleepTime;
-                        avg_olap_sleep_time /= inner_group.olaps_tx_per_worker as SleepTime;
+                        avg_olap_sleep_time /= inner_group.olap_workers as CurrentVersionSI;
+                        avg_olap_sleep_time /= inner_group.olaps_tx_per_worker as CurrentVersionSI;
 
                         let _nc = fs::remove_file(format!("ll_olap_{experiment_id}_{subgroup}.csv"));
                         let mut olap_file = fs::OpenOptions::new()
@@ -521,7 +519,7 @@ pub fn execute_experiments() {
                             .open(format!("ll_olap_{experiment_id}_{subgroup}.csv"))
                             .unwrap();
 
-                        olap_file.write_all(b"snapshot,sleep_time,range_end,latency\n").unwrap();
+                        olap_file.write_all(b"target_snapshot,current_snapshot,range_end,latency\n").unwrap();
                         for (si, range_max, olap_latency, t_sleep) in olap_data_result {
                             olap_file.write_all(format!("\
                             {si},{t_sleep},{range_max},{olap_latency}\n").as_bytes()).unwrap();
