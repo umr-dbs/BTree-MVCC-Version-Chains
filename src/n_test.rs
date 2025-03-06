@@ -111,7 +111,7 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
                 = uni_form.sample(&mut rand::rng()) as RangeMax;
 
             let sleep_time
-                = rand::random_range(olap..(olap+olap_id)*1u64);
+                = rand::random_range(olap..(olap+olap_id)*5u64);
 
             thread::sleep(Duration::from_millis(sleep_time));
 
@@ -396,6 +396,8 @@ pub fn execute_experiments() {
                     }).collect_vec();
 
                 terminate_workload.map(|shutdown| shutdown.store(true, SeqCst));
+                index_handler = Some(sp_index_handler.join().unwrap());
+                
                 total_running_time = SystemTime::now()
                     .duration_since(start_time)
                     .unwrap()
@@ -423,8 +425,8 @@ pub fn execute_experiments() {
                         .unwrap();
                 }
             }
-
-            let index_handler = sp_index_handler.join().unwrap();
+  
+            let mut index_handler = index_handler.unwrap();
             let (h, r) = height_root(&index_handler);
             let (alloc, reuse) = block_alloc_reuses(&index_handler);
             let (olap_w, olaps_per_w, olaps_joint_workload)
@@ -486,6 +488,8 @@ pub fn execute_experiments() {
                             }).collect_vec();
 
                         terminate_workload.map(|shutdown| shutdown.store(true, SeqCst));
+                        index_handler = sp_index_handler.join().unwrap();
+                        
                         total_running_time
                             = SystemTime::now().duration_since(start_time).unwrap().as_millis();
 
@@ -509,7 +513,6 @@ pub fn execute_experiments() {
                     }
                     // drop(olap_handle.take());
                     
-                    let index_handler = sp_index_handler.join().unwrap();
                     let (h, r) = height_root(&index_handler);
                     let (alloc, reuse) = block_alloc_reuses(&index_handler);
                     let (olap_w, olaps_per_w, olaps_joint_workload)
@@ -856,6 +859,13 @@ fn experiment(
 
     type WorkerSignal = ();
 
+    let is_nop = 
+        insert_ratio == 0 && 
+        delete_ratio == 0 &&
+        update_ratio == 0 &&
+        points_reads_ratio == 0 &&
+        range_reads_ratio == 0;
+
     let handles = (0..num_threads)
         .map(|_| {
             let manager = manager.clone();
@@ -900,6 +910,7 @@ fn experiment(
                 loop {
                     match thread_control.try_recv() {
                         Err(TryRecvError::Disconnected) => break,
+                        _ if is_nop => thread::sleep(Duration::from_millis(1)),
                         _ => {
                             let next
                                 = local_tx(sampler.sample());
