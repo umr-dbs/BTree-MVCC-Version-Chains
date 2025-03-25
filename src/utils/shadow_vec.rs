@@ -155,12 +155,21 @@ impl<E: Default + Clone> Drop for ShadowVec<E> {
 }
 
 // #[derive(Clone, Default)]
-// pub struct VersionList_<Payload: Clone + Default>(LinkedList<VTuple<Payload>>);
+// pub struct VersionList<Payload: Clone + Default>(LinkedList<VTuple<Payload>>);
 // 
-// unsafe impl<Payload: Clone + Default> Sync for VersionList_<Payload> {}
+// unsafe impl<Payload: Clone + Default> Sync for VersionList<Payload> {}
 // 
 // 
-// impl<Payload: Clone + Default> VersionList_<Payload> {
+// impl<Payload: Clone + Default> VersionList<Payload> {
+//     #[inline(always)]
+//     pub fn from(version: Version, payload: Payload) -> Self {
+//         Self(LinkedList::from([VTuple {
+//             version,
+//             del_version: Version::MAX,
+//             payload,
+//         }]))
+//     }
+// 
 //     #[inline(always)]
 //     pub fn new(version: Version, payload: Payload) -> Self {
 //         Self(LinkedList::from([VTuple {
@@ -265,7 +274,7 @@ impl<E: Default + Clone> Drop for ShadowVec<E> {
 // pub struct VTuple<Payload: Clone + Default> {
 //     version: Version,
 //     pub del_version: Version,
-//     payload: Payload
+//     pub payload: Payload
 // }
 // 
 // impl<Payload: Clone + Default>  VTuple<Payload> {
@@ -296,7 +305,7 @@ pub struct VersionList<Payload: Clone + Default> {
     len: AtomicUsize
 }
 
-struct VersionListIterator<Payload: Clone + Default> {
+pub struct VersionListIterator<Payload: Clone + Default> {
     current: Option<VersionedEntry<Payload>>,
 }
 
@@ -365,7 +374,7 @@ impl<Payload: Clone + Default> Drop for VersionList<Payload> {
 }
 
 impl<Payload: Clone + Default> VersionList<Payload> {
-    pub(crate) fn iter(&self) -> VersionListIterator<Payload> {
+    pub fn iter(&self) -> VersionListIterator<Payload> {
         let ptr
             = self.head.load(Acquire);
 
@@ -426,17 +435,20 @@ impl<Payload: Clone + Default> VersionList<Payload> {
 
     #[inline]
     pub fn find(&self, version: Version) -> Option<&VersionedEntry<Payload>> {
-        let head
+        let mut curr
             = self.head_ref();
 
-        if head.insert_version <= version && head.del_version > version {
-            return Some(head);
+        if curr.insert_version <= version && curr.del_version > version {
+            return Some(curr);
         }
 
-        while let Some(next) = head.next {
-            let next = unsafe { &*next };
+        while let Some(next_p) = curr.next {
+            let next = unsafe { &*next_p };
             if next.insert_version <= version && next.del_version > version {
                 return Some(next);
+            }
+            else {
+                curr = next;
             }
         }
 
