@@ -13,7 +13,6 @@ use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::record_model::Version;
 use crate::tree::bplus_tree::{BPlusTree, INIT_TREE_HEIGHT, LockLevel, MAX_TREE_HEIGHT};
 use crate::utils::interval::Interval;
-use crate::utils::shadow_vec::VEntryPayload;
 use crate::utils::smart_cell::sched_yield;
 
 impl<const FAN_OUT: usize,
@@ -259,7 +258,7 @@ impl<const FAN_OUT: usize,
                             .filter_map(|v_record|
                                 match v_record.find(version) {
                                     Some(v_entry) =>
-                                        Some(RecordPoint::new(v_record.key(), v_entry.payload().clone())),
+                                        Some(RecordPoint::new(v_record.key(), v_entry.payload.clone())),
                                     _ => None
                                 })
                             .collect::<Vec<_>>();

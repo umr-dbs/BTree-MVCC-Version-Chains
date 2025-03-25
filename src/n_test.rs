@@ -16,17 +16,16 @@ pub type INDEX = BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
 use crossbeam_channel::{bounded, Sender, TryRecvError};
 use itertools::{Either, Itertools};
 use rand::rngs::ThreadRng;
-use rand::{Rng, SeedableRng};
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::fs::OpenOptions;
 use std::ops::Div;
-use std::sync::atomic::{fence, AtomicBool, AtomicU64, AtomicUsize};
-use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
+use std::sync::atomic::{AtomicBool, AtomicUsize};
+use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::sync::Arc;
-use std::{fs, mem, thread};
+use std::{fs, thread};
 use std::io::Write;
-use std::os::unix::thread::JoinHandleExt;
 use std::thread::{spawn, JoinHandle};
 use std::time::{Duration, SystemTime};
 use rand::distr::{Alphanumeric, Uniform};
@@ -40,6 +39,8 @@ use crate::locking::locking_strategy::CRUDProtocol;
 use crate::page_model::node::Node;
 use crate::record_model::Version;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
+use crate::utils::smart_cell::{force_read_success, unforce_read_success};
+
 pub enum Sampler {
     Uniform(Uniform<u64>, ThreadRng),
     Zipf(Zipf<f64>, ThreadRng),
@@ -353,6 +354,10 @@ pub fn execute_experiments() {
         .into_iter()
         .enumerate()
         .for_each(|(experiment_id, experiment)| {
+            unsafe {
+                unforce_read_success()
+            }
+            
             let mut olap_handle = None;
             let mut index_handler = None;
             let init_target_tx = experiment.total_tx;
@@ -456,6 +461,10 @@ pub fn execute_experiments() {
                 .into_iter()
                 .enumerate()
                 .for_each(|(num, inner_group)| {
+                    unsafe {
+                        force_read_success()
+                    }
+                    
                     let subgroup = num + 1;
                     let target_tx = inner_group.total_tx;
                     let mut olap_handle = None;

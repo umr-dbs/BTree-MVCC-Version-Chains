@@ -41,7 +41,7 @@ impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> VersionedRecord
     pub fn new(key: Key, version: Version, payload: Payload) -> Self {
         Self {
             key,
-            version_list: VersionList::new(version, payload)
+            version_list: VersionList::from(version, payload)
         }
     }
 

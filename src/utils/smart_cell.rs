@@ -3,7 +3,7 @@ use std::{hint, mem, ptr};
 use std::mem::{transmute, transmute_copy};
 use std::ops::{Deref, DerefMut};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::atomic::Ordering::{AcqRel, Acquire, Relaxed, Release, SeqCst};
 use parking_lot::lock_api::{MutexGuard, RwLockReadGuard, RwLockWriteGuard};
 use parking_lot::{Mutex, RawMutex, RawRwLock, RwLock};
@@ -25,6 +25,16 @@ const ZEROED_FLAG_VERSION: LatchVersion = 0x0;
 const WRITE_OBSOLETE_FLAG_VERSION: LatchVersion = 0xC_000000000000000;
 const WRITE_PIN_FLAG_VERSION: LatchVersion = 0x6_000000000000000;
 const WRITE_PIN_OBSOLETE_FLAG_VERSION: LatchVersion = 0xE_000000000000000;
+
+static READ_SUCCESS: AtomicBool = AtomicBool::new(false);
+
+pub unsafe fn force_read_success() {
+    READ_SUCCESS.store(true, SeqCst);
+}
+
+pub unsafe fn unforce_read_success() {
+    READ_SUCCESS.store(false, SeqCst);
+}
 
 #[cfg(all(feature = "olc-hle", any(target_arch = "x86", target_arch = "x86_64")))]
 pub trait AtomicElisionExt {
@@ -161,7 +171,12 @@ impl<E: Default> OptCell<E> {
         let read_version
             = self.load_version();
 
-        (read_version & WRITE_OBSOLETE_FLAG_VERSION == 0, read_version & !PIN_FLAG_VERSION)
+        if READ_SUCCESS.load(Relaxed) {
+            (true, read_version & !WRITE_PIN_OBSOLETE_FLAG_VERSION)
+        }
+        else {
+            (read_version & WRITE_OBSOLETE_FLAG_VERSION == 0, read_version & !PIN_FLAG_VERSION) 
+        }
     }
 
     #[cfg(all(feature = "olc-hle", any(target_arch = "x86", target_arch = "x86_64")))]
@@ -224,8 +239,10 @@ impl<E: Default> OptCell<E> {
     pub fn is_read_valid(&self, read_latch: LatchVersion) -> IsRead {
         let load_version
             = self.load_version();
-
-        read_latch == load_version & !PIN_FLAG_VERSION && load_version & WRITE_OBSOLETE_FLAG_VERSION == 0
+        
+        READ_SUCCESS.load(Relaxed) || (
+            read_latch == load_version & !PIN_FLAG_VERSION && load_version & WRITE_OBSOLETE_FLAG_VERSION == 0
+        )
     }
 
     #[inline(always)]

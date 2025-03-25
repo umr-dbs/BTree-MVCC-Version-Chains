@@ -184,7 +184,7 @@ impl<const FAN_OUT: usize,
                                 .get_unchecked(v_record)
                                 .find(version)
                                 .map(|v|
-                                    RecordPoint::new(key, v.payload().clone()))
+                                    RecordPoint::new(key, v.payload.clone()))
                                 .into(),
                             _ => CRUDOperationResult::MatchedRecord(None)
                         })
@@ -216,7 +216,7 @@ impl<const FAN_OUT: usize,
                                 .version_list()
                                 .find(version)
                                 .map(|found|
-                                    RecordPoint::new(key, found.payload().clone()))
+                                    RecordPoint::new(key, found.payload.clone()))
                                 .unwrap_or_default()
                         })
                         .into())
@@ -251,7 +251,7 @@ impl<const FAN_OUT: usize,
                          .skip_while(|record| !interval.contains(record.key))
                          .filter_map(|record| {
                              if let Some(v_e) = record.find(version) {
-                                 Some((record.key(), v_e.payload()))
+                                 Some((record.key(), v_e.payload.clone()))
                              } else {
                                  None
                              }
