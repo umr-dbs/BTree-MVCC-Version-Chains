@@ -338,8 +338,13 @@ impl<E: Default> OptCell<E> {
 
         let read_version
             = self.load_version();
-
-        (read_version & WRITE_OBSOLETE_FLAG_VERSION == 0, read_version)
+        
+        if READ_SUCCESS.load(Relaxed) {
+            (true, read_version & !WRITE_PIN_OBSOLETE_FLAG_VERSION)
+        }
+        else {
+            (read_version & WRITE_OBSOLETE_FLAG_VERSION == 0, read_version)
+        }
     }
 }
 
