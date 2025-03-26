@@ -327,7 +327,10 @@ impl<E: Default> OptCell<E> {
 
     #[inline(always)]
     pub fn is_read_not_obsolete(&self) -> bool {
-        self.load_version() & WRITE_OBSOLETE_FLAG_VERSION == 0
+        let version 
+            = self.load_version();
+        
+        READ_SUCCESS.load(Relaxed) || version & WRITE_OBSOLETE_FLAG_VERSION == 0
     }
 
     #[inline(always)]
