@@ -1,13 +1,11 @@
 use std::hash::Hash;
 use std::fmt::Display;
 use std::mem;
-use std::ops::Deref;
 use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationInnerReason::{KeyAlreadyDeleted, KeyDoesNotExist};
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::record_model::record_point::RecordPoint;
-use crate::record_model::Version;
 use crate::tree::bplus_tree::BPlusTree;
 
 const DEBUG_VERIFY: bool = false;
@@ -27,7 +25,7 @@ impl<const FAN_OUT: usize,
         match crud_operation {
             CRUDOperation::Delete(key) if olc => {
                 let (node_visits, guard) = self
-                    .traversal_write_olc(key);
+                    .traversal_write_olc_append(key);
 
                 let del_version
                     = self.next_version();
@@ -39,7 +37,7 @@ impl<const FAN_OUT: usize,
                  {
                      Ok(Some(payload)) => CRUDOperationResult::Deleted(key, payload, del_version),
                      Ok(None) => CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
-                     Err(..) => CRUDOperationResult::Error
+                     Err(..) => CRUDOperationResult::ZeroAffected(KeyAlreadyDeleted),
                  })
             }
             CRUDOperation::Delete(key) => {
@@ -56,7 +54,7 @@ impl<const FAN_OUT: usize,
                  {
                      Ok(Some(payload)) => CRUDOperationResult::Deleted(key, payload, del_version),
                      Ok(None) => CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
-                     Err(..) => CRUDOperationResult::Error
+                     Err(..) => CRUDOperationResult::ZeroAffected(KeyAlreadyDeleted)
                  })
             }
             CRUDOperation::Insert(key, payload) if olc => {
@@ -104,7 +102,7 @@ impl<const FAN_OUT: usize,
             }
             CRUDOperation::Update(key, payload) if olc => {
                 let (node_visits, guard) = self
-                    .traversal_write_olc(key);
+                    .traversal_write_olc_append(key);
 
                 let update_version = self.next_version();
                 if DEBUG_VERIFY {
@@ -348,7 +346,7 @@ impl<const FAN_OUT: usize,
                     })
                 }
             }
-            CRUDOperation::PopMin if olc => match self.traversal_write_olc(self.min_key) {
+            CRUDOperation::PopMin if olc => match self.traversal_write_olc_append(self.min_key) {
                 (node_visits, leaf_guard) => {
                     let leaf_page = leaf_guard
                         .deref()
@@ -406,7 +404,7 @@ impl<const FAN_OUT: usize,
                     }
                 }
             }
-            CRUDOperation::PopMax if olc => match self.traversal_write_olc(self.max_key) {
+            CRUDOperation::PopMax if olc => match self.traversal_write_olc_append(self.max_key) {
                 (node_visits, leaf_guard) => {
                     let leaf_page = leaf_guard
                         .deref()

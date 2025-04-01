@@ -26,15 +26,15 @@ const WRITE_OBSOLETE_FLAG_VERSION: LatchVersion = 0xC_000000000000000;
 const WRITE_PIN_FLAG_VERSION: LatchVersion = 0x6_000000000000000;
 const WRITE_PIN_OBSOLETE_FLAG_VERSION: LatchVersion = 0xE_000000000000000;
 
-static READ_SUCCESS: AtomicBool = AtomicBool::new(false);
-
-pub unsafe fn force_read_success() {
-    READ_SUCCESS.store(true, SeqCst);
-}
-
-pub unsafe fn unforce_read_success() {
-    READ_SUCCESS.store(false, SeqCst);
-}
+// static READ_SUCCESS: AtomicBool = AtomicBool::new(false);
+//
+// pub unsafe fn force_read_success() {
+//     READ_SUCCESS.store(true, SeqCst);
+// }
+//
+// pub unsafe fn unforce_read_success() {
+//     READ_SUCCESS.store(false, SeqCst);
+// }
 
 #[cfg(all(feature = "olc-hle", any(target_arch = "x86", target_arch = "x86_64")))]
 pub trait AtomicElisionExt {
@@ -521,7 +521,8 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
                     ptr::write(self, reader);
                 }
             }
-            OLCAppendPin(cell, latch) => unsafe {
+            OLCAppendPin(cell, latch) |
+            OLCReaderPin(cell, latch) => unsafe {
                 if let OLCCell(opt) = cell.0.as_ref() {
                     let reader
                         = OLCReader(Some((transmute_copy(cell), *latch ^ PIN_FLAG_VERSION)));
@@ -531,6 +532,36 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
                 }
             }
             _ => {}
+        }
+    }
+
+    #[inline(always)]
+    pub fn upgrade_append_lock(&mut self) -> bool {
+        match self {
+            OLCReader(Some((ref cell, ..))) => unsafe {
+                match cell.0.as_ref() {
+                    OLCCell(opt) |
+                    LightWeightHybridCell(opt) => {
+                        match opt.pin_lock() {
+                            Ok(pin_latch) => {
+                                let append_pin = OLCAppendPin(transmute_copy(cell), pin_latch);
+                                ptr::write(self, append_pin);
+                                true
+                            }
+                            _ => false
+                        }
+                    }
+                    _ => self.upgrade_write_lock()
+                }
+            }
+            OLCReaderPin(cell, pin_latch) => unsafe {
+                let writer = OLCAppendPin(
+                    transmute_copy(cell), *pin_latch);
+
+                ptr::write(self, writer);
+                true
+            }
+            _ => self.upgrade_write_lock()
         }
     }
 
@@ -555,20 +586,20 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
                 ptr::write(self, OLCReader(None));
                 false
             }
-            OLCReader(Some((ref cell, ..))) 
-            if READ_SUCCESS.load(Relaxed) => {
-                if let OLCCell(opt) = cell.0.as_ref() {
-                    match opt.pin_lock() {
-                        Ok(pin_latch) => unsafe {
-                            let append_pin = OLCAppendPin(transmute_copy(cell), pin_latch);
-                            ptr::write(self, append_pin);
-                            return true
-                        }
-                        _ => {} 
-                    }
-                }
-                false
-            }
+            // OLCReader(Some((ref cell, ..)))
+            // if READ_SUCCESS.load(Relaxed) => {
+            //     if let OLCCell(opt) = cell.0.as_ref() {
+            //         match opt.pin_lock() {
+            //             Ok(pin_latch) => unsafe {
+            //                 let append_pin = OLCAppendPin(transmute_copy(cell), pin_latch);
+            //                 ptr::write(self, append_pin);
+            //                 return true
+            //             }
+            //             _ => {}
+            //         }
+            //     }
+            //     false
+            // }
             OLCReader(Some((ref cell, read_latch))) => unsafe {
                 match cell.0.as_ref() {
                     OLCCell(opt) | LightWeightHybridCell(opt) => if let Some(write_latch)

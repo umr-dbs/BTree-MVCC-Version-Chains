@@ -345,14 +345,24 @@ impl<const FAN_OUT: usize,
         }
     }
 
-    #[inline]
+    #[inline(always)]
+    pub(crate) fn traversal_write_olc_append(&self, key: Key) -> (NodeVisits, BlockGuard<FAN_OUT, NUM_RECORDS, Key, Payload>) {
+        self.traversal_write_olc_op(key, true)
+    }
+
+    #[inline(always)]
     pub(crate) fn traversal_write_olc(&self, key: Key) -> (NodeVisits, BlockGuard<FAN_OUT, NUM_RECORDS, Key, Payload>) {
+        self.traversal_write_olc_op(key, false)
+    }
+
+    #[inline]
+    fn traversal_write_olc_op(&self, key: Key, append_op: bool) -> (NodeVisits, BlockGuard<FAN_OUT, NUM_RECORDS, Key, Payload>) {
         let mut attempt = 0;
         let mut lock_level = MAX_TREE_HEIGHT;
         let mut node_visits = 0usize;
 
         loop {
-            match self.traversal_write_olc_internal(lock_level, attempt, key) {
+            match self.traversal_write_olc_internal(lock_level, attempt, key, append_op) {
                 (visits, Err((n_lock_level, n_attempt))) => {
                     attempt = n_attempt;
                     lock_level = n_lock_level;
@@ -366,7 +376,7 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline]
-    fn traversal_write_olc_internal(&self, lock_level: LockLevel, attempt: Attempts, key: Key)
+    fn traversal_write_olc_internal(&self, lock_level: LockLevel, attempt: Attempts, key: Key, append_op: bool)
     -> (NodeVisits, Result<BlockGuard<FAN_OUT, NUM_RECORDS, Key, Payload>, (LockLevel, Attempts)>)
     {
         let mut curr_level = INIT_TREE_HEIGHT;
@@ -478,6 +488,11 @@ impl<const FAN_OUT: usize,
                         current_guard = next_guard;
                     }
                 }
+                _ if append_op => return if current_guard.upgrade_append_lock() {
+                    (node_visits, Ok(current_guard))
+                } else {
+                    (node_visits, Err((curr_level - 1, attempt + 1)))
+                },
                 _ => return if current_guard.upgrade_write_lock() {
                     (node_visits, Ok(current_guard))
                 } else {

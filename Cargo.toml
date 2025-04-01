@@ -1,6 +1,6 @@
 [package]
 name = "MVCCBPlusTree"
-version = "0.0.14"
+version = "0.0.15"
 edition = "2021"
 authors = ["Amir El-Shaikh <elshaikh@mathematik.uni-marburg.de>"]
 description = "Experimental Concurrency Control CRUD MVB+Tree Implementation"

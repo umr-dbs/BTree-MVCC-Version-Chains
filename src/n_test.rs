@@ -39,7 +39,7 @@ use crate::locking::locking_strategy::CRUDProtocol;
 use crate::page_model::node::Node;
 use crate::record_model::Version;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
-use crate::utils::smart_cell::{force_read_success, unforce_read_success};
+// use crate::utils::smart_cell::{force_read_success, unforce_read_success};
 
 pub enum Sampler {
     Uniform(Uniform<u64>, ThreadRng),
@@ -354,9 +354,9 @@ pub fn execute_experiments() {
         .into_iter()
         .enumerate()
         .for_each(|(experiment_id, experiment)| {
-            unsafe {
-                unforce_read_success()
-            }
+            // unsafe {
+            //     unforce_read_success()
+            // }
             
             let mut olap_handle = None;
             let mut index_handler = None;
@@ -461,9 +461,9 @@ pub fn execute_experiments() {
                 .into_iter()
                 .enumerate()
                 .for_each(|(num, inner_group)| {
-                    unsafe {
-                        force_read_success()
-                    }
+                    // unsafe {
+                    //     force_read_success()
+                    // }
                     
                     let subgroup = num + 1;
                     let target_tx = inner_group.total_tx;
