@@ -302,7 +302,7 @@ pub struct VersionedEntry<Payload: Clone + Default> {
 #[derive(Default)]
 pub struct VersionList<Payload: Clone + Default> {
     head: AtomicPtr<VersionedEntry<Payload>>,
-    len: AtomicUsize
+    // len: AtomicUsize
 }
 
 pub struct VersionListIterator<Payload: Clone + Default> {
@@ -339,7 +339,7 @@ impl<Payload: Clone + Default> Clone for VersionList<Payload> {
                 VersionList::new(ele.payload, ele.insert_version),
             None => VersionList {
                 head: AtomicPtr::new(null_mut()),
-                len: AtomicUsize::new(0),
+                // len: AtomicUsize::new(0),
             }
         };
 
@@ -357,7 +357,7 @@ impl<Payload: Clone + Default> Drop for VersionList<Payload> {
             let mut curr
                 = self.head.load(Acquire);
 
-            fence(Acquire);
+            // fence(Acquire);
             while !curr.is_null() {
                 let mut curr_ref
                     = Box::from_raw(curr);
@@ -382,7 +382,7 @@ impl<Payload: Clone + Default> VersionList<Payload> {
             current: match ptr.is_null() {
                 true => None,
                 _ => unsafe {
-                    fence(Acquire);
+                    // fence(Acquire);
 
                     Some((*ptr).clone())
                 }
@@ -396,7 +396,7 @@ impl<Payload: Clone + Default> VersionList<Payload> {
             &*self.head.load(Acquire)
         };
 
-        fence(Acquire);
+        // fence(Acquire);
         p
     }
 
@@ -406,13 +406,14 @@ impl<Payload: Clone + Default> VersionList<Payload> {
             &mut *self.head.load(Acquire)
         };
 
-        fence(Acquire);
+        // fence(Acquire);
         p
     }
 
     #[inline(always)]
     pub fn len(&self) -> usize {
-        self.len.load(Acquire)
+        self.iter().count()
+        // self.len.load(Acquire)
     }
 
     #[inline(always)]
@@ -429,7 +430,7 @@ impl<Payload: Clone + Default> VersionList<Payload> {
                 insert_version,
                 del_version: Version::MAX,
             }))),
-            len: AtomicUsize::new(1)
+            // len: AtomicUsize::new(1)
         }
     }
 
@@ -472,9 +473,9 @@ impl<Payload: Clone + Default> VersionList<Payload> {
 
         head.del_version = insert_version;
 
-        fence(Release);
+        // fence(Release);
         self.head.store(new_head, Release);
-        self.len.fetch_add(1, Release);
+        // self.len.fetch_add(1, Release);
 
         old_ele
     }
@@ -486,7 +487,7 @@ impl<Payload: Clone + Default> VersionList<Payload> {
 
         if head.insert_version < del_version && head.del_version > del_version {
             head.del_version = del_version;
-            fence(Release);
+            // fence(Release);
 
             Some(head.payload.clone())
         }

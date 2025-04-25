@@ -111,7 +111,7 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
 
         for _ in 0..number_olaps as u64 {
             let si = index.committed_version();
-            let sleep_time = rand::random_range(1..=olap_id);
+            let sleep_time = 1800 + rand::random_range(0..400);
 
             thread::sleep(Duration::from_millis(sleep_time));
 
