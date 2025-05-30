@@ -422,7 +422,9 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                     .back()
                     .unwrap();
 
-                old.value().get_mut().del_version = insert_version.into();
+                if old.value().del_version.get().is_none() {
+                    old.value().get_mut().del_version = insert_version.into();
+                }
                 let _
                     = skip_list.insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
 
@@ -439,11 +441,13 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                         unreachable!()
                     };
 
-                old.payload.del_version = insert_version.into();
+                if old.payload.del_version.get().is_none() {
+                    old.payload.del_version = insert_version.into();
 
-                if let CRUDOperationResult::Updated(..) =
-                    tree.dispatch(CRUDOperation::Update(old.key, old.payload.clone())).1
-                { } else { unreachable!() };
+                    if let CRUDOperationResult::Updated(..) =
+                        tree.dispatch(CRUDOperation::Update(old.key, old.payload.clone())).1
+                    { } else { unreachable!() };
+                }
 
                 match tree
                     .dispatch(CRUDOperation::Insert(insert_version, RecordInfo::new(payload)))
@@ -462,7 +466,7 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
             VersionIndex::VANILLA(version_list) => version_list
                 .delete(del_version),
             VersionIndex::SkipList(skip_list) => {
-                let mut current
+                let current
                     = skip_list.back().unwrap();
 
                 if *current.key() < del_version && !current
@@ -485,20 +489,18 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                     = tree.dispatch(CRUDOperation::PeekMax);
 
                 if let CRUDOperationResult::MatchedRecord(Some(mut entry_record)) = peek {
-                    if entry_record.key < del_version && !entry_record
+                    if entry_record.key < del_version && entry_record
                         .payload
                         .del_version
                         .get()
-                        .map(|_| true)
-                        .unwrap_or(false)
+                        .is_none()
                     {
                         entry_record.payload.del_version = del_version.into();
-                    }
-
-                    match tree.dispatch(CRUDOperation::Update(entry_record.key, entry_record.payload)).1 {
-                        CRUDOperationResult::Updated(.., v) =>
-                            return Some(v.payload),
-                        _ => unreachable!(),
+                        match tree.dispatch(CRUDOperation::Update(entry_record.key, entry_record.payload)).1 {
+                            CRUDOperationResult::Updated(.., v) =>
+                                return Some(v.payload),
+                            _ => unreachable!(),
+                        }
                     }
                 }
 
