@@ -37,6 +37,7 @@ use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::locking::locking_strategy::CRUDProtocol;
 use crate::page_model::node::Node;
+use crate::record_model::v_record_point::VersionIndexType;
 use crate::record_model::Version;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
 // use crate::utils::smart_cell::{force_read_success, unforce_read_success};
@@ -109,17 +110,32 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
         let mut olap_res
             = Vec::with_capacity(number_olaps);
 
-        for _ in 0..number_olaps as u64 {
-            let si = index.committed_version();
-            let sleep_time = 1800 + rand::random_range(0..400);
+        let current_version
+            = index.committed_version();
 
-            thread::sleep(Duration::from_millis(sleep_time));
+        let range_max = 1000;
+        let sleep_time = 0;
 
-            let current_version
-                = index.committed_version();
-            
-            let range_max
-                = uni_form.sample(&mut rand::rng()) as RangeMax;
+        let si_steps = current_version / number_olaps as u64;
+        let limit = match current_version % number_olaps as u64 == 0 {
+            true => number_olaps as u64,
+            false => number_olaps as u64 + 1,
+        };
+        
+        for olap_id in 0..=limit {
+            let si = si_steps * olap_id;
+            // let si = index.committed_version();
+            // let sleep_time = 0;
+
+            // thread::sleep(Duration::from_millis(sleep_time));
+
+            // let current_version
+            //     = rand::random_range(0..=si);
+            // 
+            // let si = current_version;
+            // 
+            // let range_max
+            //     = uni_form.sample(&mut rand::rng()) as RangeMax;
 
             let time_start = SystemTime::now();
             let _crud_res = index.dispatch(CRUDOperation::Range(
@@ -163,6 +179,7 @@ pub struct GroupConfig {
     olap_workers: usize,
     olaps_tx_per_worker: usize,
     protocol: CRUDProtocol,
+    v_index_type: VersionIndexType,
     clock: ClockType,
     skew: f64,
     skew_n: usize,
@@ -211,7 +228,7 @@ impl GroupConfig {
     }
 
     fn index_handler(&self) -> IndexHandler {
-        Either::Right(self.protocol.clone())
+        Either::Right((self.protocol.clone(), self.v_index_type))
     }
 
     fn is_read_only(&self) -> bool {
@@ -239,6 +256,7 @@ impl Default for GroupConfig {
             olaps_tx_per_worker: 0,
             chain_groups: vec![],
             protocol: Default::default(),
+            v_index_type: VersionIndexType::VANILLA,
             clock: ClockType::FREE,
             skew: 1f64,
             skew_n: 10000,
@@ -259,8 +277,9 @@ impl Display for GroupConfig {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "{},{},{},{},{},{},{},{},{},{},{},{}",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
             self.protocol,
+            self.v_index_type,
             "_",
             self.skew,
             self.skew_n,
@@ -295,7 +314,7 @@ impl Display for SubGroupConfig {
     }
 }
 
-type IndexHandler = Either<Arc<INDEX>, CRUDProtocol>;
+type IndexHandler = Either<Arc<INDEX>, (CRUDProtocol, VersionIndexType)>;
 
 fn load_config_experiments() -> Vec<GroupConfig> {
     match OpenOptions::new().read(true).open(CONFIG_PARAMETERS) {
@@ -329,6 +348,7 @@ pub fn execute_experiments() {
     tx_fail,\
     time,\
     protocol,\
+    version_index,\
     clock,\
     skew,\
     skew_n,\
@@ -364,9 +384,9 @@ pub fn execute_experiments() {
             let mut total_running_time = 0u128;
             
             if experiment.olap_workers > 0 {
-                if let Either::Right(protocol) = experiment.index_handler() {
+                if let Either::Right((protocol, v_index_kind)) = experiment.index_handler() {
                     print!("{experiment_id},INIT,{init_target_tx}");
-                    index_handler = Some(Either::Left(Arc::new(new_INDEX(protocol))));
+                    index_handler = Some(Either::Left(Arc::new(new_INDEX(protocol, v_index_kind))));
                     olap_handle = Some(run_olaps(index_handler.clone().unwrap(),
                                                  experiment.olap_workers,
                                                  experiment.olaps_tx_per_worker,
@@ -893,7 +913,8 @@ fn experiment(
 
     let manager = match index_handler {
         Either::Left(m_index) => m_index,
-        Either::Right(protocol) => Arc::new(new_INDEX(protocol)),
+        Either::Right((protocol, v_index_kind)) =>
+            Arc::new(new_INDEX(protocol, v_index_kind)),
     };
 
     type WorkerSignal = ();

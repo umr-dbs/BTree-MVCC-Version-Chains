@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem;
@@ -28,7 +29,7 @@ pub const _32KB: usize  = 32 * _1KB;
 
 pub const fn bsz_alignment_min<Key, Payload>() -> usize
 where Key: Default + Ord + Copy + Hash,
-      Payload: Default + Clone
+      Payload: Default + Clone + Send + Sync + Display + 'static
 {
         mem::align_of::<Arc<()>>() + // ptr size
         mem::align_of::<usize>() + // dispatcher alignment
@@ -42,7 +43,7 @@ where Key: Default + Ord + Copy + Hash,
 
 pub const fn bsz_alignment<Key, Payload>() -> usize
 where Key: Default + Ord + Copy + Hash,
-      Payload: Default + Clone
+      Payload: Default + Clone + Send + Sync + Display + 'static
 {
     bsz_alignment_min::<Key, Payload>() +
         if ENABLE_SMALL_BLOCK {  MAX_ZEROS_PER_BLOCK } else { 0 }
@@ -52,7 +53,7 @@ pub struct BlockManager<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone,
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > {
     // block_id_counter: AtomicBlockID,
     pub alloc_count: AtomicUsize,
@@ -62,7 +63,7 @@ pub struct BlockManager<
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Clone for BlockManager<FAN_OUT, NUM_RECORDS, Key, Payload> {
     fn clone(&self) -> Self {
         Self {
@@ -77,7 +78,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone,
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Default for BlockManager<FAN_OUT, NUM_RECORDS, Key, Payload> {
     fn default() -> Self {
         BlockManager::new()
@@ -88,7 +89,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > BlockManager<FAN_OUT, NUM_RECORDS, Key, Payload>
 {
     // /// Generates and returns a new atomic (unique across callers) BlockID.

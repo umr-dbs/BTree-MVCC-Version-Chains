@@ -14,7 +14,7 @@ use crate::utils::interval::Interval;
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash + Sync + Display + 'static,
-    Payload: Default + Clone + Sync + 'static
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>
 {
     #[inline(always)]

@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::hash::Hash;
 use std::mem;
 use std::sync::atomic::Ordering::SeqCst;
@@ -8,7 +9,9 @@ use crate::page_model::{Attempts, BlockRef, Height, Level, ObjectCount};
 use crate::block::block::{Block, BlockGuard};
 use crate::n_test::{dec_key, inc_key, INDEX};
 use crate::record_model::{AtomicVersion, Version};
+use crate::record_model::v_record_point::VersionIndexType;
 use crate::tree::bplus_tree;
+use crate::utils::shadow_vec::VersionIndex;
 use crate::utils::un_cell::UnCell;
 
 pub type LockLevel = ObjectCount;
@@ -21,53 +24,55 @@ pub struct BPlusTree<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash + Sync + 'static,
-    Payload: Default + Clone + Sync + 'static
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > {
     pub(crate) root: UnCell<Root<FAN_OUT, NUM_RECORDS, Key, Payload>>,
     pub(crate) locking_strategy: LockingStrategy,
     pub(crate) block_manager: BlockManager<FAN_OUT, NUM_RECORDS, Key, Payload>,
+    pub(crate) version_clock: AtomicVersion,
+    pub(crate) v_index_type: VersionIndexType,
     pub(crate) min_key: Key,
     pub(crate) max_key: Key,
     pub(crate) inc_key: fn(Key) -> Key,
     pub(crate) dec_key: fn(Key) -> Key,
-    pub(crate) version_clock: AtomicVersion
 }
 
 unsafe impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash + Sync,
-    Payload: Default + Clone + Sync
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Sync for BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload> {}
 
 unsafe impl<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash + Sync,
-    Payload: Default + Clone + Sync
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Send for BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload> {}
 
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
-    Payload: Default + Clone + Sync,
+    Payload:Default + Clone + Send + Sync + Display + 'static
 > Default for BPlusTree<FAN_OUT, NUM_RECORDS, u64, Payload> {
     fn default() -> Self {
         BPlusTree::new(
             u64::MIN,
             u64::MAX,
             inc_key,
-            dec_key)
+            dec_key,
+            VersionIndexType::VANILLA)
     }
 }
 
 #[allow(non_snake_case)]
-pub fn new_INDEX(locking_strategy: LockingStrategy) -> INDEX {
-   BPlusTree::new_with(locking_strategy, u64::MIN, u64::MAX, inc_key, dec_key)
+pub fn new_INDEX(locking_strategy: LockingStrategy, kind: VersionIndexType) -> INDEX {
+   BPlusTree::new_with(locking_strategy, u64::MIN, u64::MAX, inc_key, dec_key, kind)
 }
 
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash + Sync,
-    Payload: Default + Clone + Sync
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>
 {
     #[inline(always)]
@@ -85,7 +90,8 @@ impl<const FAN_OUT: usize,
             min_key: Key,
             max_key: Key,
             inc_key: fn(Key) -> Key,
-            dec_key: fn(Key) -> Key) -> Self
+            dec_key: fn(Key) -> Key,
+            v_index_type: VersionIndexType) -> Self
     {
         let empty_node
             = block_manager.new_empty_leaf();
@@ -102,6 +108,7 @@ impl<const FAN_OUT: usize,
             inc_key,
             dec_key,
             version_clock: AtomicVersion::new(0),
+            v_index_type
         }
     }
 
@@ -117,14 +124,15 @@ impl<const FAN_OUT: usize,
                     min_key: Key,
                     max_key: Key,
                     inc_key: fn(Key) -> Key,
-                    dec_key: fn(Key) -> Key) -> Self
+                    dec_key: fn(Key) -> Key,
+                    version_index_type: VersionIndexType) -> Self
     {
-        Self::make(BlockManager::default(), locking_strategy, min_key, max_key, inc_key, dec_key)
+        Self::make(BlockManager::default(), locking_strategy, min_key, max_key, inc_key, dec_key, version_index_type)
     }
 
     #[inline(always)]
-    pub fn new(min_key: Key, max_key: Key, inc_key: fn(Key) -> Key, dec_key: fn(Key) -> Key) -> Self {
-        Self::new_with(LockingStrategy::default(), min_key, max_key, inc_key, dec_key)
+    pub fn new(min_key: Key, max_key: Key, inc_key: fn(Key) -> Key, dec_key: fn(Key) -> Key, version_index_type: VersionIndexType) -> Self {
+        Self::new_with(LockingStrategy::default(), min_key, max_key, inc_key, dec_key, version_index_type)
     }
 
     #[inline(always)]

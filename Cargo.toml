@@ -1,6 +1,6 @@
 [package]
 name = "MVCCBPlusTree"
-version = "0.0.15"
+version = "0.0.16"
 edition = "2021"
 authors = ["Amir El-Shaikh <elshaikh@mathematik.uni-marburg.de>"]
 description = "Experimental Concurrency Control CRUD MVB+Tree Implementation"
@@ -23,18 +23,17 @@ orwc-fair = []
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-hashbrown = "0.15.2"
-crossbeam = "0.8.4"
-chrono = "0.4.40"
+CCBPlusTree = { git = "ssh://git@github.com/umr-dbs/CC-BPlusTree.git", version = "0.0.120" }
+crossbeam-skiplist = "0.1.3"
+chrono = "0.4.41"
 rand_distr = "0.5.1"
-rand = "0.9.0"
-num_cpus = "1.16.0"
+rand = "0.9.1"
 itertools = "0.14.0"
-parking_lot = { version = "0.12.3", features = ["hardware-lock-elision"] }
+parking_lot = { version = "0.12.4", features = ["hardware-lock-elision"] }
 serde = { version ="1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140" }
-crossbeam-channel = "0.5.14"
+crossbeam-channel = "0.5.15"
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.171"
-sysinfo = "0.33.1"
+libc = "0.2.172"
+sysinfo = "0.35.1"
 raw-cpuid = "11.5.0"

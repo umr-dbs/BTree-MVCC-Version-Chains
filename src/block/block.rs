@@ -1,3 +1,4 @@
+use std::fmt::Display;
 use std::hash::Hash;
 use std::ops::{Deref, DerefMut};
 use std::ptr::{addr_of, addr_of_mut};
@@ -14,7 +15,7 @@ pub struct Block<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone,
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > {
     // pub block_id: BlockID,
     pub node_data: Node<FAN_OUT, NUM_RECORDS, Key, Payload>,
@@ -23,7 +24,7 @@ pub struct Block<
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Default for Block<FAN_OUT, NUM_RECORDS, Key, Payload>
 {
     fn default() -> Self {
@@ -37,7 +38,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Block<FAN_OUT, NUM_RECORDS, Key, Payload>
 {
     #[inline(always)]
@@ -61,7 +62,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Deref for Block<FAN_OUT, NUM_RECORDS, Key, Payload> {
     type Target = Node<FAN_OUT, NUM_RECORDS, Key, Payload>;
 
@@ -77,7 +78,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > DerefMut for Block<FAN_OUT, NUM_RECORDS, Key, Payload> {
     #[inline(always)]
     fn deref_mut(&mut self) -> &mut Self::Target {
@@ -91,7 +92,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > AsRef<Node<FAN_OUT, NUM_RECORDS, Key, Payload>> for Block<FAN_OUT, NUM_RECORDS, Key, Payload> {
     #[inline(always)]
     fn as_ref(&self) -> &Node<FAN_OUT, NUM_RECORDS, Key, Payload> {
@@ -105,7 +106,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone,
+    Payload: Default + Clone + Send + Sync + Display + 'static,
 > AsMut<Node<FAN_OUT, NUM_RECORDS, Key, Payload>> for Block<FAN_OUT, NUM_RECORDS, Key, Payload> {
     #[inline(always)]
     fn as_mut(&mut self) -> &mut Node<FAN_OUT, NUM_RECORDS, Key, Payload> {
@@ -128,7 +129,7 @@ impl<'a,
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > BlockGuard<'a, FAN_OUT, NUM_RECORDS, Key, Payload> {
     // #[inline(always)]
     // pub unsafe fn cell_version_olc(&self) -> Version {

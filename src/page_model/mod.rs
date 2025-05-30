@@ -1,3 +1,4 @@
+use std::fmt::Display;
 // use std::fmt::{Display, Formatter};
 use std::hash::Hash;
 use std::sync::Arc;
@@ -29,7 +30,7 @@ pub type BlockRef<
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Hash + Copy,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Block<FAN_OUT, NUM_RECORDS, Key, Payload> {
     #[inline(always)]
     pub fn into_rw(self) -> SmartCell<Block<FAN_OUT, NUM_RECORDS, Key, Payload>> {

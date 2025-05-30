@@ -10,8 +10,8 @@ use crate::page_model::leaf_page::LeafPage;
 // use crate::record_model::record::Record;
 // use crate::record_model::record_like::RecordLike;
 // use crate::record_model::record_list::{PayloadVersioned, RecordList};
-use crate::record_model::record_point::RecordPoint;
-use crate::record_model::v_record_point::VersionedRecordPoint;
+// use crate::record_model::record_point::RecordPoint;
+use crate::record_model::v_record_point::{VersionIndexType, VersionedRecordPoint};
 use crate::record_model::Version;
 // use crate::record_model::Version;
 // use crate::record_model::version_info::VersionInfo;
@@ -21,7 +21,7 @@ pub enum Node<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > {
     Index(InternalPage<FAN_OUT, NUM_RECORDS, Key, Payload>),
     Leaf(LeafPage<NUM_RECORDS, Key, Payload>),
@@ -31,7 +31,7 @@ pub enum Node<
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash + Display,
-    Payload: Default + Clone + Display
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Display for Node<FAN_OUT, NUM_RECORDS, Key, Payload> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -96,7 +96,7 @@ impl NodeUnsafeDegree {
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static,
 > Node<FAN_OUT, NUM_RECORDS, Key, Payload> {
     #[inline(always)]
     pub fn is_overflow(&self, allocation: usize) -> bool {
@@ -197,7 +197,7 @@ impl<const FAN_OUT: usize,
                 .map(|found| events_page
                     .as_records_mut()
                     .get_unchecked_mut(found)
-                    .version_list_mut()
+                    .version_index_mut()
                     .delete(del_version))
             {
                 Ok(Some(payload)) => Ok(Some(payload)),
@@ -227,7 +227,7 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline]
-    pub fn push_record_point(&mut self, key: Key, payload: Payload, version: Version) -> bool {
+    pub fn push_record_point(&mut self, key: Key, payload: Payload, version: Version, kind: VersionIndexType) -> bool {
         match self {
             Node::Leaf(records_page) => match records_page
                 .as_records()
@@ -236,11 +236,11 @@ impl<const FAN_OUT: usize,
                 Err(pos) => {
                     records_page
                         .as_records_mut()
-                        .insert(pos, VersionedRecordPoint::new(key, version, payload));
+                        .insert(pos, VersionedRecordPoint::new(key, version, payload, kind));
 
                     true
                 }
-                Ok(pos) => unsafe {
+                Ok(pos) => {
                     records_page
                         .as_records_mut()
                         .get_unchecked_mut(pos)
@@ -266,7 +266,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > AsRef<Node<FAN_OUT, NUM_RECORDS, Key, Payload>> for Node<FAN_OUT, NUM_RECORDS, Key, Payload> {
     fn as_ref(&self) -> &Node<FAN_OUT, NUM_RECORDS, Key, Payload> {
         &self
@@ -276,7 +276,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Default for Node<FAN_OUT, NUM_RECORDS, Key, Payload> {
     fn default() -> Self {
         Self::Leaf(LeafPage::default())

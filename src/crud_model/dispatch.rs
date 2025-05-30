@@ -1,11 +1,12 @@
 use std::hash::Hash;
 use std::fmt::Display;
 use std::mem;
+use CCBPlusTree::record_model::record_point::RecordPoint;
 use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationInnerReason::{KeyAlreadyDeleted, KeyDoesNotExist};
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
-use crate::record_model::record_point::RecordPoint;
+// use crate::record_model::record_point::RecordPoint;
 use crate::tree::bplus_tree::BPlusTree;
 
 const DEBUG_VERIFY: bool = false;
@@ -13,7 +14,7 @@ const DEBUG_VERIFY: bool = false;
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash + Sync + Display,
-    Payload: Default + Clone + Sync + Display
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > CRUDDispatcher<Key, Payload> for BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>
 {
     #[inline]
@@ -66,7 +67,7 @@ impl<const FAN_OUT: usize,
                 if DEBUG_VERIFY {
                     let res =  (node_visits, guard.deref_mut()
                         .unwrap()
-                        .push_record_point(key, payload, ingest_version)
+                        .push_record_point(key, payload, ingest_version, self.v_index_type)
                         .then(|| CRUDOperationResult::Inserted(key, ingest_version))
                         .unwrap_or_default());
 
@@ -84,7 +85,7 @@ impl<const FAN_OUT: usize,
                 else {
                     (node_visits, guard.deref_mut()
                         .unwrap()
-                        .push_record_point(key, payload, ingest_version)
+                        .push_record_point(key, payload, ingest_version, self.v_index_type)
                         .then(|| CRUDOperationResult::Inserted(key, ingest_version))
                         .unwrap_or_default())
                 }
@@ -96,7 +97,7 @@ impl<const FAN_OUT: usize,
                 let ingest_version = self.next_version();
                 (node_visits, guard.deref_mut()
                     .unwrap()
-                    .push_record_point(key, payload, ingest_version)
+                    .push_record_point(key, payload, ingest_version, self.v_index_type)
                     .then(|| CRUDOperationResult::Inserted(key, ingest_version))
                     .unwrap_or_default())
             }
@@ -211,7 +212,7 @@ impl<const FAN_OUT: usize,
                             leaf_page
                                 .as_records()
                                 .get_unchecked(pos)
-                                .version_list()
+                                .version_index()
                                 .find(version)
                                 .map(|found|
                                     RecordPoint::new(key, found.payload.clone()))

@@ -9,7 +9,7 @@ pub(crate) struct Root<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > {
     pub(crate) block: BlockRef<FAN_OUT, NUM_RECORDS, Key, Payload>,
     pub(crate) height: Height
@@ -19,13 +19,13 @@ unsafe impl<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Send for Root<FAN_OUT, NUM_RECORDS, Key, Payload> { }
 
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Display for Root<FAN_OUT, NUM_RECORDS, Key, Payload> {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         write!(f, "Root(height={})", self.height())
@@ -36,13 +36,13 @@ unsafe impl<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Sync for Root<FAN_OUT, NUM_RECORDS, Key, Payload> { }
 
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Into<Root<FAN_OUT, NUM_RECORDS, Key, Payload>> for (BlockRef<FAN_OUT, NUM_RECORDS, Key, Payload>, Height) {
     #[inline(always)]
     fn into(self) -> Root<FAN_OUT, NUM_RECORDS, Key, Payload> {
@@ -53,7 +53,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Root<FAN_OUT, NUM_RECORDS, Key, Payload> {
     #[inline(always)]
     pub(crate) fn new(block: BlockRef<FAN_OUT, NUM_RECORDS, Key, Payload>, height: Height) -> Self {

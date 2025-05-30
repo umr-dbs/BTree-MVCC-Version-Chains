@@ -2,46 +2,89 @@ use std::hash::Hash;
 use std::mem;
 use std::fmt::{Display, Formatter};
 use std::ops::{Deref, DerefMut};
+use serde::{Deserialize, Serialize};
 use crate::record_model::unsafe_clone::UnsafeClone;
 use crate::record_model::Version;
-use crate::utils::shadow_vec::VersionList;
+use crate::utils::shadow_vec::{VersionIndex, VersionList};
 
-#[derive(Default)]
-pub(crate) struct VersionedRecordPoint<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> {
-    pub key: Key,
-    pub version_list: VersionList<Payload>
+
+#[derive(Clone, Copy, Serialize, Deserialize)]
+pub enum VersionIndexType {
+    VANILLA,
+    SkipList,
+    BTree
 }
 
-impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> Deref for VersionedRecordPoint<Key, Payload> {
-    type Target = VersionList<Payload>;
-    fn deref(&self) -> &Self::Target {
-        &self.version_list
-    }
-}
-
-impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> DerefMut for VersionedRecordPoint<Key, Payload> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.version_list
-    }
-}
-
-
-impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> Clone for VersionedRecordPoint<Key, Payload> {
-    #[inline(always)]
-    fn clone(&self) -> Self {
-        Self {
-            key: self.key(),
-            version_list: self.version_list().clone(),
+impl Display for VersionIndexType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        match self {
+            VersionIndexType::VANILLA => write!(f, "VANILLA"),
+            VersionIndexType::SkipList => write!(f, "SkipList"),
+            VersionIndexType::BTree => write!(f, "BTree"),
         }
     }
 }
 
-impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> VersionedRecordPoint<Key, Payload> {
+pub(crate) struct VersionedRecordPoint<
+    Key: Ord + Copy + Hash + Default,
+    Payload: Default + Clone + Send + Sync + Display + 'static>
+{
+    pub key: Key,
+    pub version_index: VersionIndex<Payload>
+}
+
+
+impl<Key: Ord + Copy + Hash + Default,
+    Payload: Default + Clone + Send + Sync + Display + 'static>  Clone for VersionedRecordPoint<Key, Payload>
+{
+    fn clone(&self) -> Self {
+        Self {
+            key: self.key,
+            version_index: self.version_index.clone(),
+        }
+    }
+}
+impl<Key: Ord + Copy + Hash + Default,
+    Payload: Default + Clone + Send + Sync + Display + 'static>  Default for VersionedRecordPoint<Key, Payload>
+{
+    fn default() -> Self {
+        Self {
+            key: Key::default(),
+            version_index: VersionIndex::VANILLA(VersionList::default()),
+        }
+    }
+}
+
+impl<Key: Ord + Copy + Hash + Default, Payload: Default + Clone + Send + Sync + Display + 'static> Deref for VersionedRecordPoint<Key, Payload> {
+    type Target = VersionIndex<Payload>;
+    fn deref(&self) -> &Self::Target {
+        &self.version_index
+    }
+}
+
+impl<Key: Ord + Copy + Hash + Default, Payload: Default + Clone + Send + Sync + Display + 'static> DerefMut for VersionedRecordPoint<Key, Payload> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.version_index
+    }
+}
+
+
+// impl<Key: Ord + Copy + Hash + Default, Payload: Default + Clone + Send + Sync + Display + 'static> Clone for VersionedRecordPoint<Key, Payload> {
+//     #[inline(always)]
+//     fn clone(&self) -> Self {
+//         Self {
+//             key: self.key(),
+//             version_index: self.version_index().clone(),
+//         }
+//     }
+// }
+
+impl<Key: Ord + Copy + Hash + Default, Payload: Default + Clone + Send + Sync + Display + 'static> VersionedRecordPoint<Key, Payload> {
     #[inline(always)]
-    pub fn new(key: Key, version: Version, payload: Payload) -> Self {
+    pub fn new(key: Key, version: Version, payload: Payload, kind: VersionIndexType) -> Self {
         Self {
             key,
-            version_list: VersionList::from(version, payload)
+            version_index: VersionIndex::new(kind, payload, version)
         }
     }
 
@@ -56,13 +99,13 @@ impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> VersionedRecord
     }
 
     #[inline(always)]
-    pub const fn version_list(&self) -> &VersionList<Payload> {
-        &self.version_list
+    pub const fn version_index(&self) -> &VersionIndex<Payload> {
+        &self.version_index
     }
 
     #[inline(always)]
-    pub fn version_list_mut(&mut self) -> &mut VersionList<Payload> {
-        &mut self.version_list
+    pub fn version_index_mut(&mut self) -> &mut VersionIndex<Payload> {
+        &mut self.version_index
     }
 }
 
@@ -73,9 +116,11 @@ impl<Key: Ord + Copy + Hash + Default, Payload: Clone + Default> VersionedRecord
 //     }
 // }
 
-impl<Key: Display + Ord + Copy + Hash + Default, Payload: Default + Display + Clone> Display for VersionedRecordPoint<Key, Payload> {
+impl<Key: Display + Ord + Copy + Hash + Default,
+    Payload: Default + Clone + Send + Sync + Display + 'static> Display for VersionedRecordPoint<Key, Payload>
+{
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "RecordPoint(Key: {}, VersionList-Len: {})", self.key(), self.version_list().len())
+        write!(f, "RecordPoint(Key: {}, VersionList-Len: {})", self.key(), self.version_index().len())
     }
 }
 

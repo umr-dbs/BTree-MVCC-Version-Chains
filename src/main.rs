@@ -1,11 +1,12 @@
 use std::{env, fs, mem};
 use chrono::{DateTime, Local};
+use crossbeam_skiplist::SkipMap;
 use rand::SeedableRng;
 use crate::block::block::Block;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::locking::locking_strategy::LockingStrategy;
 use crate::locking::locking_strategy::LockingStrategy::*;
-use crate::n_test::{execute_experiments, hle, Key, Payload, DEBUG, FAN_OUT, NUM_RECORDS};
+use crate::n_test::{execute_experiments, hle, GroupConfig, Key, Payload, DEBUG, FAN_OUT, NUM_RECORDS};
 use crate::utils::smart_cell::ENABLE_YIELD;
 
 mod block;
@@ -20,6 +21,8 @@ mod utils;
 mod n_test;
 
 fn main() {
+    // let skip_map = SkipMap::new();
+    // println!("{}", serde_json::to_string_pretty(&GroupConfig::default()).unwrap());
     if DEBUG {
         println!(">>HLE: \t\t\t{}", hle());
         // println!(">>size_of::<Block<127, 127, u64, u64>>()) = {}",

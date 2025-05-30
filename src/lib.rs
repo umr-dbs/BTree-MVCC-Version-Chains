@@ -49,6 +49,8 @@ use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::locking::locking_strategy::{hybrid_lock_attempts, LHL_read_write, LockingStrategy, orwc, orwc_attempts};
 use crate::n_test::INDEX;
+use crate::record_model::v_record_point::VersionIndexType;
+use crate::record_model::v_record_point::VersionIndexType::VANILLA;
 use crate::tree::bplus_tree::new_INDEX;
 use crate::utils::interval::Interval;
 
@@ -146,6 +148,7 @@ pub const MONO: c_int = 3;
 pub const HL: c_int = 4;
 pub const LC: c_int = 5;
 
+pub const V_INDEX_KIND: VersionIndexType = VANILLA;
 #[no_mangle]
 pub extern "C" fn init_tree(p: c_int, e1: c_int, e2: c_int) -> *mut c_void {
     let lp = match p {
@@ -158,7 +161,7 @@ pub extern "C" fn init_tree(p: c_int, e1: c_int, e2: c_int) -> *mut c_void {
         _ => orwc(),
     };
     
-    Box::into_raw(Box::new(BTreeApiExport(new_INDEX(lp)))) as _
+    Box::into_raw(Box::new(BTreeApiExport(new_INDEX(lp, V_INDEX_KIND)))) as _
 }
 
 #[no_mangle]

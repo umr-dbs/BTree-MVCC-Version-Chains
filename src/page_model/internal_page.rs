@@ -2,6 +2,7 @@ use std::hash::Hash;
 use std::marker::PhantomData;
 use std::{mem, ptr};
 use std::cell::Cell;
+use std::fmt::Display;
 use std::mem::MaybeUninit;
 use std::ptr::null_mut;
 use crate::page_model::{BlockRef, ObjectCount};
@@ -12,7 +13,7 @@ pub struct InternalPage<
     const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > {
     pub(crate) key_array: [MaybeUninit<Key>; FAN_OUT],
     pub(crate) children_array: [MaybeUninit<BlockRef<FAN_OUT, NUM_RECORDS, Key, Payload>>; FAN_OUT],
@@ -22,7 +23,7 @@ pub struct InternalPage<
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone,
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Drop for InternalPage<FAN_OUT, NUM_RECORDS, Key, Payload>
 {
     fn drop(&mut self) {
@@ -37,7 +38,7 @@ impl<const FAN_OUT: usize,
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
-    Payload: Default + Clone
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > InternalPage<FAN_OUT, NUM_RECORDS, Key, Payload> {
     #[inline(always)]
     pub fn new() -> Self {

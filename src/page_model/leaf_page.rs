@@ -1,10 +1,11 @@
 use std::cell::Cell;
+use std::fmt::Display;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem;
 use std::mem::{ManuallyDrop, MaybeUninit};
 use crate::page_model::ObjectCount;
-use crate::record_model::record_point::RecordPoint;
+// use crate::record_model::record_point::RecordPoint;
 use crate::record_model::v_record_point::VersionedRecordPoint;
 use crate::utils::safe_cell::SafeCell;
 use crate::utils::shadow_vec::{ShadowVec, VersionList};
@@ -12,7 +13,7 @@ use crate::utils::shadow_vec::{ShadowVec, VersionList};
 pub struct LeafPage<
     const NUM_RECORDS: usize,
     Key: Hash + Ord + Copy + Default,
-    Payload: Clone + Default,
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > {
     pub(crate) records_len: SafeCell<ObjectCount>,
     pub(crate) record_data: [MaybeUninit<VersionedRecordPoint<Key, Payload>>; NUM_RECORDS],
@@ -21,7 +22,7 @@ pub struct LeafPage<
 
 impl<const NUM_RECORDS: usize,
     Key: Hash + Ord + Copy + Default,
-    Payload: Clone + Default,
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Default for LeafPage<NUM_RECORDS, Key, Payload> {
     fn default() -> Self {
         LeafPage::new()
@@ -30,7 +31,7 @@ impl<const NUM_RECORDS: usize,
 
 impl<const NUM_RECORDS: usize,
     Key: Hash + Ord + Copy + Default,
-    Payload: Clone + Default
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > Drop for LeafPage<NUM_RECORDS, Key, Payload> {
     fn drop(&mut self) {
         self.as_records_mut()
@@ -40,7 +41,7 @@ impl<const NUM_RECORDS: usize,
 
 impl<const NUM_RECORDS: usize,
     Key: Hash + Ord + Copy + Default,
-    Payload: Clone + Default,
+    Payload: Default + Clone + Send + Sync + Display + 'static
 > LeafPage<NUM_RECORDS, Key, Payload> {
     #[inline(always)]
     pub const fn new() -> Self {
