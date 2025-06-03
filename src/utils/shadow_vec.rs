@@ -19,6 +19,7 @@ use CCBPlusTree::record_model::record_point::RecordPoint;
 use CCBPlusTree::test::{dec_key, inc_key};
 use CCBPlusTree::tree;
 use CCBPlusTree::tree::bplus_tree::BPlusTree;
+use parking_lot::RwLock;
 // use crate::record_model::record_point::RecordPoint;
 use crate::record_model::v_record_point::VersionIndexType;
 use crate::record_model::version_info::{DeletedVersionInfo, VersionInfo};
@@ -297,7 +298,6 @@ pub const BTREE_V_INDEX_NUMBER_RECORDS: usize = BTREE_V_INDEX_FAN_OUT * 2;
 pub const BTREE_V_INDEX_CONCURRENCY_PROTOCOL: LockingStrategy = LHL_read(4);
 pub type InsertVersion = Version;
 
-
 #[derive(Clone, Default)]
 struct RecordInfo<Payload: Clone + Display + Default + Sync + 'static> {
     del_version: DeletedVersionInfo,
@@ -324,10 +324,39 @@ impl<Payload: Clone + Display + Default + Sync + 'static> RecordInfo<Payload> {
     }
 }
 
+struct AtomicPtrWrapper<E>(AtomicPtr<E>);
+
+impl<E> Deref for AtomicPtrWrapper<E> {
+    type Target = E;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0.load(Acquire) }
+    }
+}
+
+impl<E> Drop for AtomicPtrWrapper<E> {
+    fn drop(&mut self) {
+        unsafe { let _dang = Box::from_raw(self.0.load(Acquire)); }
+    }
+}
+
+impl<K, V> Into<AtomicPtrWrapper<SkipMap<K, V>>> for SkipMap<K, V> {
+    fn into(self) -> AtomicPtrWrapper<SkipMap<K, V>> {
+        AtomicPtrWrapper(AtomicPtr::new(Box::into_raw(Box::new(self))))
+    }
+}
+
+impl<K, V> Into<AtomicPtrWrapper<RwLock<SkipMap<K, V>>>> for SkipMap<K, V> {
+    fn into(self) -> AtomicPtrWrapper<RwLock<SkipMap<K, V>>> {
+        AtomicPtrWrapper(AtomicPtr::new(Box::into_raw(Box::new(RwLock::new(self)))))
+    }
+}
+
 pub enum VersionIndex<Payload: Clone + Display + Default + Send + Sync + 'static> {
     VANILLA(VersionList<Payload>),
-    SkipList(SkipMap<InsertVersion, SafeCell<RecordInfo<Payload>>>),
-    DexaBTree(BPlusTree<BTREE_V_INDEX_FAN_OUT, BTREE_V_INDEX_NUMBER_RECORDS, InsertVersion, RecordInfo<Payload>>),
+    SkipList(AtomicPtrWrapper<SkipMap<InsertVersion, SafeCell<RecordInfo<Payload>>>>),
+    SkipListSynced(AtomicPtrWrapper<RwLock<SkipMap<InsertVersion, SafeCell<RecordInfo<Payload>>>>>),
+    DexaBTree(AtomicPtrWrapper<BPlusTree<BTREE_V_INDEX_FAN_OUT, BTREE_V_INDEX_NUMBER_RECORDS, InsertVersion, RecordInfo<Payload>>>),
 }
 
 impl<Payload: Clone + Default + Display + Send + Sync + 'static> Clone for VersionIndex<Payload> {
@@ -335,12 +364,21 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> Clone for Versi
         match self {
             VersionIndex::VANILLA(version_list) => VersionIndex::VANILLA(version_list.clone()),
             VersionIndex::SkipList(skip_list) => {
-                let mut sk = SkipMap::new();
+                let sk = SkipMap::new();
                 for x in skip_list.iter() {
                     sk.insert(*x.key(), SafeCell::new(x.value().get_mut().clone()));
                 }
 
-                VersionIndex::SkipList(sk)
+                VersionIndex::SkipList(sk.into())
+            },
+            VersionIndex::SkipListSynced(rw_skip_list) => {
+                let skip_list = rw_skip_list.read();
+                let sk = SkipMap::new();
+                for x in skip_list.iter() {
+                    sk.insert(*x.key(), SafeCell::new(x.value().get_mut().clone()));
+                }
+
+                VersionIndex::SkipList(sk.into())
             },
             VersionIndex::DexaBTree(tree) => {
                 let n_tree
@@ -357,7 +395,7 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> Clone for Versi
                             = n_tree.dispatch(CRUDOperation::Insert(record.key, record.payload));
                     }
                 }
-                VersionIndex::DexaBTree(n_tree)
+                VersionIndex::DexaBTree(AtomicPtrWrapper(AtomicPtr::new(Box::into_raw(Box::new(n_tree)))))
             }
         }
     }
@@ -370,6 +408,8 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                 version_list.len(),
             VersionIndex::SkipList(skip_list) =>
                 skip_list.len(),
+            VersionIndex::SkipListSynced(rw_skip_list) => 
+                rw_skip_list.read().len(),
             VersionIndex::DexaBTree(tree) =>
                 2usize.pow(tree.height() as _) - 1
         }
@@ -380,14 +420,18 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
             VersionIndexType::VANILLA =>
                 Self::VANILLA(VersionList::new(payload, version)),
             VersionIndexType::SkipList =>
-                Self::SkipList(SkipMap::from_iter([(version, SafeCell::new(RecordInfo::new(payload)))])),
-            VersionIndexType::BTree => Self::DexaBTree(BPlusTree::new_with(
+                Self::SkipList(SkipMap::from_iter([(version, SafeCell::new(RecordInfo::new(payload)))]).into()),
+            VersionIndexType::SkipListSynced =>
+                Self::SkipListSynced(
+                    SkipMap::from_iter([(version, SafeCell::new(RecordInfo::new(payload)))]).into()),
+            VersionIndexType::BTree => Self::DexaBTree(AtomicPtrWrapper(AtomicPtr::new(Box::into_raw(Box::new(
+                BPlusTree::new_with(
                 BTREE_V_INDEX_CONCURRENCY_PROTOCOL,
                 Version::MIN,
                 Version::MAX,
                 inc_key,
                 dec_key,
-            )),
+            )))))),
         }
     }
 
@@ -399,6 +443,11 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                 .map(|v_entry|
                     RecordPoint::new(v_entry.insert_version, v_entry.payload.clone())),
             VersionIndex::SkipList(skip_list) => skip_list
+                .get(&version)
+                .map(|entry|
+                    RecordPoint::new(*entry.key(), entry.value().payload.clone())),
+            VersionIndex::SkipListSynced(skip_list) => skip_list
+                .read()
                 .get(&version)
                 .map(|entry|
                     RecordPoint::new(*entry.key(), entry.value().payload.clone())),
@@ -418,6 +467,20 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
             VersionIndex::VANILLA(version_list) => version_list
                 .append(insert_version, payload),
             VersionIndex::SkipList(skip_list) => {
+                let old = skip_list
+                    .back()
+                    .unwrap();
+
+                if old.value().del_version.get().is_none() {
+                    old.value().get_mut().del_version = insert_version.into();
+                }
+                let _
+                    = skip_list.insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
+
+                old.value().payload.clone()
+            }
+            VersionIndex::SkipListSynced(rw_skip_list) => {
+                let skip_list = rw_skip_list.write();
                 let old = skip_list
                     .back()
                     .unwrap();
@@ -484,6 +547,26 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                     None
                 }
             }
+            VersionIndex::SkipListSynced(rw_skip_list) => {
+                let skip_list = rw_skip_list.write();
+                let current
+                    = skip_list.back().unwrap();
+
+                if *current.key() < del_version && !current
+                    .value()
+                    .del_version
+                    .get()
+                    .map(|_| true)
+                    .unwrap_or(false)
+                {
+                    current.value().get_mut().del_version
+                        = del_version.into();
+
+                    Some(current.value().payload.clone())
+                } else {
+                    None
+                }
+            }
             VersionIndex::DexaBTree(tree) => {
                 let (_nv, peek)
                     = tree.dispatch(CRUDOperation::PeekMax);
@@ -516,6 +599,8 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                 version_list.is_live(),
             VersionIndex::SkipList(skip_list) =>
                 skip_list.back().unwrap().value().del_version.get().is_none(),
+            VersionIndex::SkipListSynced(skip_list) =>
+                skip_list.read().back().unwrap().value().del_version.get().is_none(),
             VersionIndex::DexaBTree(tree) => match tree.dispatch(CRUDOperation::PeekMax).1 {
                 CRUDOperationResult::MatchedRecord(Some(record)) =>
                     record.payload.del_version.get().is_none(),
@@ -531,6 +616,8 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                 version_list.newest_payload(),
             VersionIndex::SkipList(skip_list) =>
                 skip_list.back().unwrap().value().payload.clone(),
+            VersionIndex::SkipListSynced(skip_list) =>
+                skip_list.read().back().unwrap().value().payload.clone(),
             VersionIndex::DexaBTree(tree) => match tree.dispatch(CRUDOperation::PeekMax).1 {
                 CRUDOperationResult::MatchedRecord(Some(record)) =>
                     record.payload.payload.clone(),

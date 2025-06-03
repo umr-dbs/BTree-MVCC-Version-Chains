@@ -12,6 +12,7 @@ use crate::utils::shadow_vec::{VersionIndex, VersionList};
 pub enum VersionIndexType {
     VANILLA,
     SkipList,
+    SkipListSynced,
     BTree
 }
 
@@ -20,6 +21,7 @@ impl Display for VersionIndexType {
         match self {
             VersionIndexType::VANILLA => write!(f, "VANILLA"),
             VersionIndexType::SkipList => write!(f, "SkipList"),
+            VersionIndexType::SkipListSynced => write!(f, "SkipListSynced"),
             VersionIndexType::BTree => write!(f, "BTree"),
         }
     }

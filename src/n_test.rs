@@ -42,6 +42,8 @@ use crate::record_model::Version;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
 // use crate::utils::smart_cell::{force_read_success, unforce_read_success};
 
+const SYSTEM_STR: &str = "B+Tree";
+
 pub enum Sampler {
     Uniform(Uniform<u64>, ThreadRng),
     Zipf(Zipf<f64>, ThreadRng),
@@ -81,7 +83,7 @@ pub fn run_olaps(handler: IndexHandler,
                  number_olaps_per_worker: usize,
                  n: usize,
                  current_committed: Version
-) -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, CurrentVersionSI, SleepTime)>>>
+) -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, CurrentVersionSI, SleepTime, ResultsCount)>>>
 {
     let mut handles
         = Vec::with_capacity(number_workers);
@@ -97,11 +99,17 @@ type CurrentVersionSI = SnapShot;
 type RangeMax = Key;
 type OlapTime = u128;
 type SleepTime = u64;
+
+type ResultsCount = usize;
+
+const FIXED_RANGE_VAR_SI: bool              = false;
+const FIXED_RANGE_INTERVAL: u64             = 1_000;
+
 pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: usize)
-    -> JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, CurrentVersionSI, SleepTime)>> {
+    -> JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, CurrentVersionSI, SleepTime, ResultsCount)>> {
     let index = index_handler
         .left()
-        .expect("OLAP init failed! Provide an initialized TxManager!");
+        .expect("OLAP Init. failed! Provide an initialized TxManager!");
 
     spawn(move || {
         let uni_form
@@ -110,44 +118,64 @@ pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: u
         let mut olap_res
             = Vec::with_capacity(number_olaps);
 
-        let current_version
+        let mut current_version
             = index.committed_version();
 
-        let range_max = 1000;
-        let sleep_time = 0;
+        let mut range_max = FIXED_RANGE_INTERVAL;
+        let mut sleep_time = 0;
 
         let si_steps = current_version / number_olaps as u64;
-        let limit = match current_version % number_olaps as u64 == 0 {
-            true => number_olaps as u64,
-            false => number_olaps as u64 + 1,
+        let limit = if FIXED_RANGE_VAR_SI {
+            match current_version % number_olaps as u64 == 0 {
+                true => number_olaps as u64,
+                false => number_olaps as u64 + 1,
+            }
+        }
+        else {
+            number_olaps as u64 - 1
         };
-        
+
         for olap_id in 0..=limit {
-            let si = si_steps * olap_id;
-            // let si = index.committed_version();
-            // let sleep_time = 0;
+            let mut si;
 
-            // thread::sleep(Duration::from_millis(sleep_time));
+            if FIXED_RANGE_VAR_SI {
+                si = si_steps * olap_id;
+            }
+            else {
+                si = index.committed_version();
+                sleep_time = rand::random_range(1..=150);
 
-            // let current_version
-            //     = rand::random_range(0..=si);
-            // 
-            // let si = current_version;
-            // 
-            // let range_max
-            //     = uni_form.sample(&mut rand::rng()) as RangeMax;
+                thread::sleep(Duration::from_millis(sleep_time));
+
+                current_version
+                    = index.committed_version();
+
+                si = rand::random_range(0..=si);
+
+                range_max
+                    = uni_form.sample(&mut rand::rng()) as RangeMax;
+            }
 
             let time_start = SystemTime::now();
-            let _crud_res = index.dispatch(CRUDOperation::Range(
+            let (_nv, crud_res) = index.dispatch(CRUDOperation::Range(
                 (index.min_key..=range_max).into(),
                 si));
-            
+
+            let matched_results_count
+                = if let CRUDOperationResult::MatchedRecords(records) = crud_res {
+                records.len()
+            }
+            else {
+                unreachable!()
+            };
+
             olap_res.push( 
                 (si, 
                  range_max, 
                  SystemTime::now().duration_since(time_start).unwrap().as_nanos(),
                  current_version,
-                 sleep_time)
+                 sleep_time,
+                 matched_results_count)
             );
         }
         
@@ -340,7 +368,8 @@ pub fn execute_experiments() {
         .fold(groups.len(), |acc, group| acc + group.num_chains());
 
     println!("[Loaded] - Experiments loaded #{total_exps}");
-    println!("experiment_id,\
+    println!("main_index,\
+    experiment_id,\
     chain_id,\
     tx_target,\
     tx_executed,\
@@ -382,10 +411,15 @@ pub fn execute_experiments() {
             let mut index_handler = None;
             let init_target_tx = experiment.total_tx;
             let mut total_running_time = 0u128;
-            
+            let v_index_prefix = match experiment.v_index_type {
+                VersionIndexType::VANILLA => "ll",
+                VersionIndexType::SkipList => "sk",
+                VersionIndexType::SkipListSynced => "sk_synced",
+                VersionIndexType::BTree => "bt"
+            };
             if experiment.olap_workers > 0 {
                 if let Either::Right((protocol, v_index_kind)) = experiment.index_handler() {
-                    print!("{experiment_id},INIT,{init_target_tx}");
+                    print!("{SYSTEM_STR},{experiment_id},INIT,{init_target_tx}");
                     index_handler = Some(Either::Left(Arc::new(new_INDEX(protocol, v_index_kind))));
                     olap_handle = Some(run_olaps(index_handler.clone().unwrap(),
                                                  experiment.olap_workers,
@@ -394,7 +428,7 @@ pub fn execute_experiments() {
                 }
             }
             else {
-                print!("{experiment_id},INIT,{init_target_tx}");
+                print!("{SYSTEM_STR},{experiment_id},INIT,{init_target_tx}");
             }
 
             let terminate_workload = match olap_handle {
@@ -420,7 +454,7 @@ pub fn execute_experiments() {
                 let olap_data_result = olap_handle
                     .into_iter()
                     .flat_map(|jh| jh.join().unwrap())
-                    .map(|t@(.., olap_time, olap_sleep_time)| {
+                    .map(|t@(.., olap_time, olap_sleep_time, _)| {
                         total_olap_time += olap_time;
                         avg_olap_sleep_time += olap_sleep_time;
                         t
@@ -438,21 +472,22 @@ pub fn execute_experiments() {
                 avg_olap_sleep_time /= experiment.olap_workers as CurrentVersionSI;
                 avg_olap_sleep_time /= experiment.olaps_tx_per_worker as CurrentVersionSI;
 
-                let _nc = fs::remove_file(format!("ll_olap_{experiment_id}_INIT.csv"));
+                let _nc = fs::remove_file(format!("{v_index_prefix}_olap_{experiment_id}_INIT.csv"));
                 let mut olap_file = fs::OpenOptions::new()
                     .append(true)
                     .create(true)
                     .write(true)
-                    .open(format!("ll_olap_{experiment_id}_INIT.csv"))
+                    .open(format!("{v_index_prefix}_olap_{experiment_id}_INIT.csv"))
                     .unwrap();
 
-                olap_file.write_all(b"target_snapshot,current_snapshot,sleep_time,range_end,latency\n").unwrap();
-                for (si, range_max, olap_latency, curr_si, sleep_time) in olap_data_result {
+                olap_file.write_all(b"target_snapshot,current_snapshot,sleep_time,range_end,count_results,latency\n").unwrap();
+                for (si, range_max, olap_latency, curr_si, sleep_time, count) in olap_data_result {
                     olap_file.write_all(format!("\
                                       {si},\
                                       {curr_si},\
                                       {sleep_time},\
                                       {range_max},\
+                                      {count},\
                                       {olap_latency}\n").as_bytes())
                         .unwrap();
                 }
@@ -490,7 +525,7 @@ pub fn execute_experiments() {
                     let mut olap_handle = None;
 
                     if inner_group.olap_workers > 0 {
-                        print!("{experiment_id},{subgroup},{target_tx}");
+                        print!("{SYSTEM_STR},{experiment_id},{subgroup},{target_tx}");
                         let si = index_handler.as_ref().left().unwrap().committed_version();
                         olap_handle = Some(run_olaps(
                             index_handler.clone(), inner_group.olap_workers,
@@ -498,7 +533,7 @@ pub fn execute_experiments() {
                             init_target_tx, si));
                     }
                     else {
-                        print!("{experiment_id},{subgroup},{target_tx}");
+                        print!("{SYSTEM_STR},{experiment_id},{subgroup},{target_tx}");
                     }
 
                     if let Either::Left(ref m_manager) = index_handler {
@@ -528,7 +563,7 @@ pub fn execute_experiments() {
                         let olap_data_result = olap_handle
                             .into_iter()
                             .flat_map(|jh| jh.join().unwrap())
-                            .map(|t@(.., olap_time, olap_sleep_time)| {
+                            .map(|t@(.., olap_time, olap_sleep_time, _)| {
                                 total_olap_time += olap_time;
                                 avg_olap_sleep_time += olap_sleep_time;
                                 t
@@ -544,21 +579,22 @@ pub fn execute_experiments() {
                         avg_olap_sleep_time /= inner_group.olap_workers as CurrentVersionSI;
                         avg_olap_sleep_time /= inner_group.olaps_tx_per_worker as CurrentVersionSI;
 
-                        let _nc = fs::remove_file(format!("ll_olap_{experiment_id}_{subgroup}.csv"));
+                        let _nc = fs::remove_file(format!("{v_index_prefix}_olap_{experiment_id}_{subgroup}.csv"));
                         let mut olap_file = fs::OpenOptions::new()
                             .append(true)
                             .create(true)
                             .write(true)
-                            .open(format!("ll_olap_{experiment_id}_{subgroup}.csv"))
+                            .open(format!("{v_index_prefix}_olap_{experiment_id}_{subgroup}.csv"))
                             .unwrap();
 
-                        olap_file.write_all(b"target_snapshot,current_snapshot,sleep_time,range_end,latency\n").unwrap();
-                        for (si, range_max, olap_latency, curr_si, sleep_time) in olap_data_result {
+                        olap_file.write_all(b"target_snapshot,current_snapshot,sleep_time,range_end,count_results,latency\n").unwrap();
+                        for (si, range_max, olap_latency, curr_si, sleep_time, count) in olap_data_result {
                             olap_file.write_all(format!("\
                             {si},\
                             {curr_si},\
                             {sleep_time},\
                             {range_max},\
+                            {count},\
                             {olap_latency}\n").as_bytes()).unwrap();
                         }
                     }
@@ -578,9 +614,10 @@ pub fn execute_experiments() {
                         = (inner_group.olap_workers, inner_group.olaps_tx_per_worker, inner_group.olap_joint_workload);
 
 
-                    println!(",{},{},{},{h},{r},{alloc},{reuse},\
+                    println!(",{},{},{},{},{h},{r},{alloc},{reuse},\
                     {total_olap_time},{olap_w},{olaps_per_w},{avg_olap_sleep_time},{olaps_joint_workload},{total_running_time}",
                              experiment.protocol,
+                             experiment.v_index_type,
                              experiment.clock,
                              inner_group);
                 });
@@ -805,6 +842,9 @@ fn run_experiment_with_params(
     index_handler
 }
 pub const DEBUG: bool = true;
+
+// pub const FAN_OUT: usize = 255;
+// pub const NUM_RECORDS: usize = 102;
 
 pub const FAN_OUT: usize = 255;
 pub const NUM_RECORDS: usize = 102;
