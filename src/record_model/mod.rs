@@ -5,6 +5,7 @@ pub mod unsafe_clone;
 
 pub mod v_record_point;
 pub mod version_info;
+pub mod version_index;
 
 /// Declares the version type.
 pub type Version = u64;

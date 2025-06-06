@@ -1,11 +1,11 @@
 use std::hash::Hash;
-use std::mem;
 use std::fmt::{Display, Formatter};
 use std::ops::{Deref, DerefMut};
 use serde::{Deserialize, Serialize};
-use crate::record_model::unsafe_clone::UnsafeClone;
+
 use crate::record_model::Version;
-use crate::utils::shadow_vec::{VersionIndex, VersionList};
+use crate::record_model::version_index::{VersionIndex, AtomicVersionList};
+use crate::record_model::version_info::DeletedVersionInfo;
 
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
@@ -52,7 +52,7 @@ impl<Key: Ord + Copy + Hash + Default,
     fn default() -> Self {
         Self {
             key: Key::default(),
-            version_index: VersionIndex::VANILLA(VersionList::default()),
+            version_index: VersionIndex::VANILLA(AtomicVersionList::default()),
         }
     }
 }
@@ -126,3 +126,28 @@ impl<Key: Display + Ord + Copy + Hash + Default,
     }
 }
 
+#[derive(Clone, Default)]
+pub struct RecordInfo<Payload: Clone + Display + Default + Sync + 'static> {
+    pub del_version: DeletedVersionInfo,
+    pub payload: Payload
+}
+
+impl<Payload: Clone + Display + Default + Sync + 'static> Display for RecordInfo<Payload> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Deleted version: {}, Payload: {}",
+               self.del_version
+                   .get()
+                   .map(|del| del.to_string())
+                   .unwrap_or("*".to_string()),
+               self.payload)
+    }
+}
+
+impl<Payload: Clone + Display + Default + Sync + 'static> RecordInfo<Payload> {
+    pub const fn new(payload: Payload) -> RecordInfo<Payload> {
+        Self {
+            del_version: DeletedVersionInfo::new_null(),
+            payload
+        }
+    }
+}

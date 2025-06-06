@@ -3,12 +3,11 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::marker::PhantomData;
 use std::mem;
-use std::mem::{ManuallyDrop, MaybeUninit};
+use std::mem::MaybeUninit;
 use crate::page_model::ObjectCount;
-// use crate::record_model::record_point::RecordPoint;
 use crate::record_model::v_record_point::VersionedRecordPoint;
 use crate::utils::safe_cell::SafeCell;
-use crate::utils::shadow_vec::{ShadowVec, VersionList};
+use crate::utils::shadow_vec::ShadowVec;
 
 pub struct LeafPage<
     const NUM_RECORDS: usize,
