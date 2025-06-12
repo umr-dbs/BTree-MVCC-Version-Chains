@@ -522,7 +522,7 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionLi
     pub fn delete(&self, del_version: Version) -> Option<Payload> {
         let head = self.head_mut();
 
-        if head.insert_version < del_version && head.del_version > del_version {
+        if head.insert_version < del_version && head.del_version == Version::MAX {
             head.del_version = del_version;
             // fence(Release);
 
