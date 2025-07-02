@@ -105,7 +105,7 @@ impl<const FAN_OUT: usize,
             max_key,
             inc_key,
             dec_key,
-            version_clock: AtomicVersion::new(0),
+            version_clock: AtomicVersion::new(1),
             v_index_type
         }
     }

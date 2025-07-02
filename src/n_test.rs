@@ -50,7 +50,7 @@ pub enum Sampler {
 }
 
 impl Sampler {
-    fn new(skew: f64, n: Key) -> Self {
+    pub fn new(skew: f64, n: Key) -> Self {
         if skew == 0_f64 {
             Sampler::Uniform(Uniform::new(0, n).unwrap(), rand::rng())
         }
@@ -59,7 +59,7 @@ impl Sampler {
         }
     }
     #[inline(always)]
-    fn sample(&mut self) -> Key {
+    pub fn sample(&mut self) -> Key {
         match self {
             Sampler::Uniform(dist, rng) =>
                 dist.sample(rng) as Key,
