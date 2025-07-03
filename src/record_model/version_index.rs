@@ -162,29 +162,24 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                     RecordPoint::new(v_entry.insert_version, v_entry.payload.clone())),
             VersionIndex::SkipList(skip_list) => {
                skip_list
-                    .iter()
-                    .rev()
-                    .find_map(|entry| {
-                        if version <= *entry.key() &&
-                            entry.value().del_version.get().map(|del| del > version)
-                                .unwrap_or(true)
-                        {
-                            Some(RecordPoint::new(*entry.key(), entry.value().payload.clone()))
-                        }
-                        else {
-                            None
-                        }
-                    })
-
-                // skip_list
-                //     .get(&version)
-                //     .map(|entry|
-                //         RecordPoint::new(*entry.key(), entry.value().payload.clone()))
+                   .range(version..)
+                   .rev()
+                   .find_map(|entry| {
+                       if version <= *entry.key() &&
+                           entry.value().del_version.get().map(|del| del > version)
+                               .unwrap_or(true)
+                       {
+                           Some(RecordPoint::new(*entry.key(), entry.value().payload.clone()))
+                       }
+                       else {
+                           None
+                       }
+                   })
             },
             VersionIndex::SkipListSynced(skip_list) =>
                 skip_list
                     .read()
-                    .iter()
+                    .range(version..)
                     .rev()
                     .find_map(|entry| {
                         if version <= *entry.key() &&
@@ -197,11 +192,6 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                             None
                         }
                     }),
-                // skip_list
-                //     .read()
-                //     .get(&version)
-                //     .map(|entry|
-                //         RecordPoint::new(*entry.key(), entry.value().payload.clone())),
             VersionIndex::DexaBTree(tree) =>
                 match tree.dispatch(CRUDOperation::Point(version)).1 {
                     CRUDOperationResult::MatchedRecord(record) =>
