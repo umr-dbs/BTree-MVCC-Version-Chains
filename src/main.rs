@@ -68,8 +68,9 @@ fn bernhard_tests() {
     const UPDATES: Key = INSERTIONS as Key;
     const DELETIONS: f64 = 0.9_f64;
     const NUMBER_OLAPS: usize = 12;
+    // const NUMBER_UPDATERS: usize = 6;
     const OLAP_TX_PER_WORKER: usize = 2000;
-    const RANGE_SIZE: Key = 100_000;
+    const RANGE_SIZE: Key = 1_000;
     const SKEWs: [f64; 3] = [0f64, 0.4, 1.4];
 
     const V_INDEX: VersionIndexType = SkipListSynced;
@@ -159,6 +160,27 @@ fn bernhard_tests() {
             )
             .unwrap();
 
+        // let mut updaters = vec![];
+        // for _ in 0..NUMBER_UPDATERS {
+        //     let index = index.clone();
+        //
+        //     let (sender, receiver)
+        //         = std::sync::mpsc::channel::<()>();
+        //
+        //     updaters.push((sender, spawn(move || {
+        //         let mut sampler
+        //             = Sampler::new(skew, INSERTIONS - 1);
+        //
+        //         loop {
+        //             match receiver.try_recv() {
+        //                 Err(..) => break,
+        //                 _ => {
+        //                     index.dispatch(CRUDOperation::Update(sampler.sample(), Payload::default()));
+        //                 }
+        //             }
+        //         }
+        //     })))
+        // }
         for _ in 0..NUMBER_OLAPS {
             let index = index.clone();
             olaps.push(spawn(move || {
@@ -202,8 +224,13 @@ fn bernhard_tests() {
             }))
         }
 
-        olaps.into_iter().map(|j| j.join().unwrap())
+        let olaps = olaps.into_iter().map(|j| j.join().unwrap())
             .flatten()
+            .collect::<Vec<_>>();
+
+        // mem::drop(updaters);
+
+        olaps.into_iter()
             .for_each(|(target_si,
                            current_si,
                            sleep_time,

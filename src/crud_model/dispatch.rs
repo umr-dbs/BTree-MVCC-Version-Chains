@@ -221,16 +221,16 @@ impl<const FAN_OUT: usize,
                         .into())
                 }
             },
-            CRUDOperation::Range(key_interval, version) if olc => {
-                let mut path
-                    = Vec::with_capacity(self.root.height() as _);
-
-                let node_visits = self.next_leaf_page(path.as_mut(),
-                                                      0,
-                                                      key_interval.lower);
-
-                self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
-            }
+            // CRUDOperation::Range(key_interval, version) if olc => {
+            //     let mut path
+            //         = Vec::with_capacity(self.root.height() as _);
+            //
+            //     let node_visits = self.next_leaf_page(path.as_mut(),
+            //                                           0,
+            //                                           key_interval.lower);
+            //
+            //     self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
+            // }
             CRUDOperation::RangeSi(key_interval) => self.dispatch(CRUDOperation::Range(
                 key_interval,
                 self.committed_version()
