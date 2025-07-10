@@ -16,7 +16,7 @@ use crate::locking::locking_strategy::LockingStrategy;
 use crate::locking::locking_strategy::LockingStrategy::*;
 use crate::n_test::{execute_experiments, format_insertions, hle, GroupConfig, Key, Payload, Sampler, DEBUG, FAN_OUT, NUM_RECORDS};
 use crate::record_model::v_record_point::VersionIndexType;
-use crate::record_model::v_record_point::VersionIndexType::SkipListSynced;
+use crate::record_model::v_record_point::VersionIndexType::{SkipList, SkipListSynced};
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
 use crate::utils::smart_cell::ENABLE_YIELD;
 
@@ -64,16 +64,16 @@ fn main() {
 type BTree = BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
 
 fn bernhard_tests() {
-    const INSERTIONS: Key = 10_000_000;
-    const UPDATES: Key = INSERTIONS as Key;
+    const INSERTIONS: Key = 10_000;
+    const UPDATES: Key = 100_000_000 as Key;
     const DELETIONS: f64 = 0.9_f64;
-    const NUMBER_OLAPS: usize = 12;
+    const NUMBER_OLAPS: usize = 1;
     // const NUMBER_UPDATERS: usize = 6;
     const OLAP_TX_PER_WORKER: usize = 2000;
     const RANGE_SIZE: Key = 1_000;
     const SKEWs: [f64; 3] = [0f64, 0.4, 1.4];
 
-    const V_INDEX: VersionIndexType = SkipListSynced;
+    const V_INDEX: VersionIndexType = SkipList;
 
     let deletions_number = (DELETIONS * INSERTIONS as f64) as usize;
     println!(
@@ -132,7 +132,7 @@ fn bernhard_tests() {
         mem::drop(data_inserts);
 
         println!(
-            "\t- MVTree Init. \n\t- \
+            "\t- BTree Init. \n\t- \
     [{NUMBER_OLAPS}] OLAPs starting with [{OLAP_TX_PER_WORKER}] transactions per worker."
         );
 

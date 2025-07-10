@@ -1,6 +1,6 @@
 [package]
 name = "MVCCBPlusTree"
-version = "0.0.17"
+version = "0.0.18"
 edition = "2021"
 authors = ["Amir El-Shaikh <elshaikh@mathematik.uni-marburg.de>"]
 description = "Experimental Concurrency Control CRUD MVB+Tree Implementation"
@@ -34,6 +34,6 @@ serde = { version ="1.0.219", features = ["derive", "rc"] }
 serde_json = { version = "1.0.140" }
 crossbeam-channel = "0.5.15"
 [target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2.172"
-sysinfo = "0.35.1"
+libc = "0.2.174"
+sysinfo = "0.36.0"
 raw-cpuid = "11.5.0"

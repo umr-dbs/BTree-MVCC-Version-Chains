@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::ops::Deref;
+use std::process::exit;
 use std::ptr::null_mut;
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, Release};
@@ -162,10 +163,11 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                     RecordPoint::new(v_entry.insert_version, v_entry.payload.clone())),
             VersionIndex::SkipList(skip_list) => {
                skip_list
-                   .range(version..)
+                   .range(..=version)
                    .rev()
-                   .find_map(|entry| {
-                       if version <= *entry.key() &&
+                   .next()
+                   .map(|entry|
+                       if version >= *entry.key() &&
                            entry.value().del_version.get().map(|del| del > version)
                                .unwrap_or(true)
                        {
@@ -174,15 +176,16 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                        else {
                            None
                        }
-                   })
+                   ).unwrap_or_default()
             },
             VersionIndex::SkipListSynced(skip_list) =>
                 skip_list
                     .read()
-                    .range(version..)
+                    .range(..=version)
                     .rev()
-                    .find_map(|entry| {
-                        if version <= *entry.key() &&
+                    .next()
+                    .map(|entry|
+                        if version >= *entry.key() &&
                             entry.value().del_version.get().map(|del| del > version)
                                 .unwrap_or(true)
                         {
@@ -191,7 +194,7 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                         else {
                             None
                         }
-                    }),
+                    ).unwrap_or_default(),
             VersionIndex::DexaBTree(tree) =>
                 match tree.dispatch(CRUDOperation::Point(version)).1 {
                     CRUDOperationResult::MatchedRecord(record) =>
