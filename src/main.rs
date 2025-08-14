@@ -1,6 +1,9 @@
 use std::{env, fs, mem};
-use std::io::Write;
+use std::collections::HashSet;
+use std::fs::OpenOptions;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::thread::spawn;
 use std::time::SystemTime;
 use chrono::{DateTime, Local};
@@ -32,34 +35,268 @@ mod utils;
 mod n_test;
 
 fn main() {
-    // let skip_map = SkipMap::new();
-    // println!("{}", serde_json::to_string_pretty(&GroupConfig::default()).unwrap());
-    if DEBUG {
-        println!(">>HLE: \t\t\t{}", hle());
-        // println!(">>size_of::<Block<127, 127, u64, u64>>()) = {}",
-        //          size_of::<Block<127, 127, u64, u64>>());
-        // println!();
-        let block_size = size_of::<Block<FAN_OUT, NUM_RECORDS, Key, Payload>>();
-        let kb = block_size as f32 / 1024f32;
-        println!("\
+    let args = env::args();
+    let parms = args.collect_vec();
+    if parms.len() > 1  {
+        match parms[1].as_str() {
+            "generate" => {
+                let query_file_name= parms[2].as_str();
+                let init_population: usize = parms[3].parse().unwrap();
+                let total_blocks: usize = parms[4].parse().unwrap();
+                let block_inserts: usize = parms[5].parse().unwrap();
+                let block_updates: usize = parms[6].parse().unwrap();
+                let block_deletes: usize = parms[7].parse().unwrap();
+
+                println!("Generate only supported in MVTree!")
+            }
+            "load" => {
+                let query_file_name= parms[2].as_str();
+                let v_index = parms[3].as_str().to_lowercase();
+                let v_type = match v_index.as_str() {
+                    "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+                    "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+                    "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+                };
+
+                let num_olaps = parms[4].parse().unwrap();
+                let workers_per_thread = parms[5].parse().unwrap();
+                let skew = parms[6].parse().unwrap();
+                let range = parms[7].parse().unwrap_or(Key::MAX);
+
+                let index
+                    = Arc::new(new_INDEX(OLC, v_type));
+
+                println!("Created BTree with version index = '{v_type}..");
+
+                let num = load_query(query_file_name, index.clone());
+
+                println!("Finished executing {} CRUD operations from {query_file_name},\
+                 starting OLAP testings...", format_insertions(num));
+                olap_tests(index, num_olaps, workers_per_thread, skew, range);
+            }
+            s => println!("unknown command '{s}'-")
+        }
+    }
+    else {
+        if DEBUG {
+            println!(">>HLE: \t\t\t{}", hle());
+            // println!(">>size_of::<Block<127, 127, u64, u64>>()) = {}",
+            //          size_of::<Block<127, 127, u64, u64>>());
+            // println!();
+            let block_size = size_of::<Block<FAN_OUT, NUM_RECORDS, Key, Payload>>();
+            let kb = block_size as f32 / 1024f32;
+            println!("\
         >>FAN_OUT: \t\t{FAN_OUT}\n\
         >>NUM_RECORDS: \t\t{NUM_RECORDS}\n\
         >>size_of(BLOCK): \t{} bytes; {kb} kb",
-                 size_of::<Block<FAN_OUT, NUM_RECORDS, Key, Payload>>());
-        println!();
-    }
-    else {
-        make_splash()
+                     size_of::<Block<FAN_OUT, NUM_RECORDS, Key, Payload>>());
+            println!();
+        }
+        else {
+            make_splash()
+        }
     }
 
-    // println!("{}", serde_json::to_string(&ORWC {
-    //     write_level: 1f32,
-    //     write_attempt: 4
-    // }).unwrap());
-    // println!("Size of Node = {}", mem::size_of::<Block<FAN_OUT, NUM_RECORDS, u64, u64>>());
-    // execute_experiments()
-    bernhard_tests()
+
+    // let skip_map = SkipMap::new();
+    // println!("{}", serde_json::to_string_pretty(&GroupConfig::default()).unwrap());
+
+
+    // seq_create();
+    // seq_run();
+    // bernhard_tests()
 }
+
+fn olap_tests(index: Arc<BTree>,
+              num_olaps: usize,
+              workers_per_thread: usize,
+              skew: f32,
+              range: u64)
+{
+    println!("Starting OLAPs...");
+    let v_index = index.v_index_type;
+    let mut olaps = vec![];
+
+    let _nc = fs::remove_file(format!("{v_index}_olap_skew_{skew}.csv"));
+    let mut olap_file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .write(true)
+        .open(format!("{v_index}_olap_skew_{skew}.csv"))
+        .unwrap();
+
+    olap_file
+        .write_all(
+            b"target_snapshot,\
+            current_snapshot,\
+            sleep_time,\
+            range_start,\
+            range_end,\
+            count_results,\
+            latency\n",
+        )
+        .unwrap();
+
+    for _ in 0..num_olaps {
+        let index = index.clone();
+        olaps.push(spawn(move || {
+            let mut results = vec![];
+            for _ in 1..workers_per_thread {
+                let mut key_min
+                    = rand::random_range(0..Key::MAX);
+
+                let mut key_max
+                    = key_min.checked_add(range).unwrap_or(Key::MAX);
+
+                if range == Key::MAX {
+                    key_min = 0;
+                    key_max = Key::MAX;
+                }
+                else if key_max >= Key::MAX {
+                    key_max = key_min;
+                    key_min -= range;
+                }
+
+                let current_si
+                    = index.committed_version();
+
+                let si
+                    = rand::random_range(1..=current_si);
+                // println!("Min = {key_min}, max = {key_max}");
+
+                let time_start
+                    = SystemTime::now();
+
+                let (_nv, crud) =
+                    index.dispatch(CRUDOperation::Range((key_min, key_max).into(), si));
+
+                let time_spent
+                    = SystemTime::now().duration_since(time_start).unwrap().as_nanos();
+
+                let count_results = match crud {
+                    CRUDOperationResult::MatchedRecords(data) =>  data.len(),
+                    _ => panic!()
+                };
+                results.push(
+                    (si, current_si, 0u128, key_min, key_max, count_results, time_spent)
+                )
+            }
+            results
+        }))
+    }
+
+    let olaps = olaps.into_iter().map(|j| j.join().unwrap())
+        .flatten()
+        .collect::<Vec<_>>();
+
+    // mem::drop(updaters);
+
+    olaps.into_iter()
+        .for_each(|(target_si,
+                       current_si,
+                       sleep_time,
+                       key_min,
+                       key_max,
+                       count_results,
+                       time_spent)|
+            {
+                olap_file.write_all(format!("\
+                            {target_si},\
+                            {current_si},\
+                            {sleep_time},\
+                            {key_min},\
+                            {key_max},\
+                            {count_results},\
+                            {time_spent}\n").as_bytes()).unwrap();
+            })
+}
+
+const INSERT: u8 = 0;
+const UPDATE: u8 = 1;
+const DELETE: u8 = 2;
+
+fn load_query(query_file: &str, index: Arc<BTree>) -> usize {
+    let mut query_file = BufReader::new(OpenOptions::new()
+        .read(true)
+        .open(format!("{query_file}"))
+        .unwrap());
+
+    let mut query_count = 0;
+    let payload = Payload::default();
+    let mut buff = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    loop {
+        match query_file.read_exact(buff.as_mut_slice()) {
+            Ok(..) => match buff[0] {
+                INSERT => {
+                    let crud = CRUDOperation::Insert(
+                        Key::from_le_bytes(buff[1..].try_into().unwrap()),
+                        payload
+                    );
+
+                    let _exe = index.dispatch(crud);
+                }
+                UPDATE => {
+                    let crud = CRUDOperation::Update(
+                        Key::from_le_bytes(buff[1..].try_into().unwrap()),
+                        payload
+                    );
+
+                    let _exe = index.dispatch(crud);
+                }
+                DELETE => {
+                    let crud = CRUDOperation::Delete(
+                        Key::from_le_bytes(buff[1..].try_into().unwrap()));
+
+                    let _exe = index.dispatch(crud);
+                }
+                _ => panic!("Unknown CRUD Operation for blocks in load query!"),
+            }
+            Err(..) => break
+        }
+
+        query_count += 1
+    }
+
+    assert!(query_file.read_exact([0].as_mut_slice()).is_err());
+    query_count
+}
+
+
+// fn seq_create() {
+//     let insert: Key = 1_000_000;
+//     let delete = 900_000;
+//
+//     let inserts = (1..=insert)
+//         // .map(|key| CRUDOperation::Insert(key, Payload::default()))
+//         .collect_vec();
+//
+//     let updates = inserts.clone();
+//
+//     let mut deletes = inserts.clone();
+//     deletes.shuffle(&mut rand::rng());
+//     deletes.truncate(delete);
+//
+//     let mut query = inserts
+//         .into_iter()
+//         .map(|key| CRUDOperation::Insert(key, Payload::default()))
+//         .chain(updates
+//             .into_iter()
+//             .map(|update| CRUDOperation::Update(update, Payload::default())))
+//         .collect_vec();
+//
+//     query.shuffle(&mut rand::rng());
+//
+//     fs::write("query.json", serde_json::to_string(query.as_slice()).unwrap()).unwrap();
+//
+// }
+//
+// fn seq_run() {
+//     println!("Reading query....");
+//     let query: Vec<CRUDOperation<Key, Payload>>
+//         = serde_json::from_reader(fs::File::open("query.json").unwrap()).unwrap();
+//
+//     println!("Loaded query....");
+// }
 
 type BTree = BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
 
@@ -68,7 +305,7 @@ fn bernhard_tests() {
     const UPDATES: Key = 100_000_000 as Key;
     const DELETIONS: f64 = 0.9_f64;
     const NUMBER_OLAPS: usize = 1;
-    // const NUMBER_UPDATERS: usize = 6;
+    const NUMBER_UPDATERS: usize = 0;
     const OLAP_TX_PER_WORKER: usize = 2000;
     const RANGE_SIZE: Key = 1_000;
     const SKEWs: [f64; 3] = [0f64, 0.4, 1.4];
@@ -160,27 +397,27 @@ fn bernhard_tests() {
             )
             .unwrap();
 
-        // let mut updaters = vec![];
-        // for _ in 0..NUMBER_UPDATERS {
-        //     let index = index.clone();
-        //
-        //     let (sender, receiver)
-        //         = std::sync::mpsc::channel::<()>();
-        //
-        //     updaters.push((sender, spawn(move || {
-        //         let mut sampler
-        //             = Sampler::new(skew, INSERTIONS - 1);
-        //
-        //         loop {
-        //             match receiver.try_recv() {
-        //                 Err(..) => break,
-        //                 _ => {
-        //                     index.dispatch(CRUDOperation::Update(sampler.sample(), Payload::default()));
-        //                 }
-        //             }
-        //         }
-        //     })))
-        // }
+        let mut updaters = vec![];
+        for _ in 0..NUMBER_UPDATERS {
+            let index = index.clone();
+
+            let (sender, receiver)
+                = std::sync::mpsc::channel::<()>();
+
+            updaters.push((sender, spawn(move || {
+                let mut sampler
+                    = Sampler::new(skew, INSERTIONS - 1);
+
+                loop {
+                    match receiver.try_recv() {
+                        Err(..) => break,
+                        _ => {
+                            index.dispatch(CRUDOperation::Update(sampler.sample(), Payload::default()));
+                        }
+                    }
+                }
+            })))
+        }
         for _ in 0..NUMBER_OLAPS {
             let index = index.clone();
             olaps.push(spawn(move || {
