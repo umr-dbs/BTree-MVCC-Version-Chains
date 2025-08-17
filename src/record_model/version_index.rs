@@ -505,14 +505,23 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionLi
     pub fn find(&self, version: Version) -> Option<&VersionedEntry<Payload>> {
         let mut curr = self.head_ref();
 
-        if curr.insert_version <= version && curr.del_version > version {
-            return Some(curr);
+        if curr.insert_version <= version {
+            return if curr.del_version > version {
+                Some(curr)
+            } else {
+                None
+            }
         }
 
         while let Some(next_p) = curr.next {
             let next = unsafe { &*next_p };
-            if next.insert_version <= version && next.del_version > version {
-                return Some(next);
+            if next.insert_version <= version {
+                return if next.del_version > version {
+                    Some(next)
+                }
+                else {
+                    None
+                }
             } else {
                 curr = next;
             }
