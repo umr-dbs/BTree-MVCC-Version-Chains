@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::ops::Deref;
 use std::process::exit;
-use std::ptr::null_mut;
+use std::ptr::{null, null_mut};
 use std::sync::atomic::AtomicPtr;
 use std::sync::atomic::Ordering::{Acquire, Release};
 use CCBPlusTree::crud_model::crud_api::CRUDDispatcher;
@@ -13,6 +13,7 @@ use CCBPlusTree::record_model::record_point::RecordPoint;
 use CCBPlusTree::test::{dec_key, inc_key};
 use CCBPlusTree::tree::bplus_tree::BPlusTree;
 use crossbeam_skiplist::SkipMap;
+use itertools::Itertools;
 use parking_lot::RwLock;
 use crate::n_test::NUM_RECORDS;
 use crate::record_model::v_record_point::{RecordInfo, VersionIndexType};
@@ -94,6 +95,7 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> Clone for Versi
                 VersionIndex::VANILLA(version_list.clone()),
             VersionIndex::SkipList(skip_list) => {
                 let sk = SkipMap::new();
+                
                 for x in skip_list.iter() {
                     sk.insert(*x.key(), SafeCell::new(x.value().get_mut().clone()));
                 }
@@ -144,7 +146,7 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
     pub fn new(kind: VersionIndexType, payload: Payload, version: Version) -> Self {
         match kind {
             VersionIndexType::VANILLA =>
-                Self::VANILLA(AtomicVersionList::new(payload, version)),
+                Self::VANILLA(AtomicVersionList::new(payload, version, None)),
             VersionIndexType::SkipList =>
                 Self::SkipList(SkipMap::from_iter([(version, SafeCell::new(RecordInfo::new(payload)))]).into()),
             VersionIndexType::SkipListSynced =>
@@ -410,19 +412,14 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> Iterator for Ve
 
 impl<Payload: Clone + Default + Display + Sync + Send + 'static> Clone for AtomicVersionList<Payload> {
     fn clone(&self) -> Self {
-        let mut iter = self.iter();
-
-        let list = match iter.next() {
-            Some(ele) => AtomicVersionList::new(ele.payload, ele.insert_version),
-            None => AtomicVersionList {
-                head: AtomicPtr::new(null_mut()),
-                // len: AtomicUsize::new(0),
-            },
+        let data = self.iter().collect_vec();
+        let list = AtomicVersionList {
+            head: AtomicPtr::new(null_mut())
         };
 
-        while let Some(entry) = iter.next() {
-            list.append(entry.insert_version, entry.payload);
-        }
+        data.into_iter().rev().for_each(|entry| unsafe {
+            list.insert_entry(entry.insert_version, entry.del_version, entry.payload);
+        });
 
         list
     }
@@ -437,7 +434,7 @@ impl<Payload: Clone + Default + Sync + Send + Display + 'static> Drop for Atomic
             while !curr.is_null() {
                 let mut curr_ref = Box::from_raw(curr);
 
-                curr = curr_ref.next.take().unwrap_or_else(|| null_mut());
+                curr = curr_ref.next.take().unwrap_or(null_mut());
 
                 drop(curr_ref);
             }
@@ -470,32 +467,24 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionLi
     }
 
     #[inline(always)]
-    fn head_mut(&self) -> &mut VersionedEntry<Payload> {
-        let p = unsafe { &mut *self.head.load(Acquire) };
-
-        // fence(Acquire);
-        p
-    }
-
-    #[inline(always)]
     pub fn len(&self) -> usize {
         self.iter().count()
         // self.len.load(Acquire)
     }
 
-    #[inline(always)]
-    pub fn from(insert_version: Version, payload: Payload) -> Self {
-        Self::new(payload, insert_version)
-    }
+    // #[inline(always)]
+    // pub fn from(insert_version: Version, payload: Payload) -> Self {
+    //     Self::new(payload, insert_version)
+    // }
 
     #[inline(always)]
-    pub fn new(payload: Payload, insert_version: Version) -> Self {
+    pub fn new(payload: Payload, insert_version: Version, del_version: Option<Version>) -> Self {
         Self {
             head: AtomicPtr::new(Box::into_raw(Box::new(VersionedEntry {
                 next: None,
                 payload,
                 insert_version,
-                del_version: Version::MAX,
+                del_version: del_version.unwrap_or(Version::MAX),
             }))),
             // len: AtomicUsize::new(1)
         }
@@ -505,39 +494,50 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionLi
     pub fn find(&self, version: Version) -> Option<&VersionedEntry<Payload>> {
         let mut curr = self.head_ref();
 
-        if curr.insert_version <= version {
-            return if curr.del_version > version {
-                Some(curr)
-            } else {
-                None
+        loop {
+            if curr.insert_version <= version && curr.del_version > version {
+                return Some(curr);
             }
-        }
 
-        while let Some(next_p) = curr.next {
-            let next = unsafe { &*next_p };
-            if next.insert_version <= version {
-                return if next.del_version > version {
-                    Some(next)
-                }
-                else {
-                    None
-                }
-            } else {
-                curr = next;
-            }
+            curr = match curr.next {
+                None => break,
+                Some(next) => unsafe { &*next },
+            };
         }
 
         None
     }
 
     #[inline]
+    unsafe fn insert_entry(&self, insert_version: Version, del_version: Version, payload: Payload) {
+        let head_p
+            = self.head.load(Acquire);
+
+        let next
+            = if head_p.is_null() { None } else { Some(head_p) };
+
+        let new_head = Box::into_raw(Box::new(VersionedEntry {
+            next,
+            payload,
+            insert_version,
+            del_version,
+        }));
+
+        self.head.store(new_head, Release);
+    }
+
+    #[inline]
     pub fn append(&self, insert_version: Version, payload: Payload) -> Payload {
-        let head = self.head_mut();
+        let head_p
+            = self.head.load(Acquire);
+
+        let head
+            = unsafe { &mut *head_p };
 
         let old_ele = head.payload.clone();
 
         let new_head = Box::into_raw(Box::new(VersionedEntry {
-            next: Some(head),
+            next: Some(head_p),
             payload,
             insert_version,
             del_version: Version::MAX,
@@ -547,16 +547,18 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionLi
             head.del_version = insert_version;
         }
 
-        // fence(Release);
         self.head.store(new_head, Release);
-        // self.len.fetch_add(1, Release);
 
         old_ele
     }
 
     #[inline]
     pub fn delete(&self, del_version: Version) -> Option<Payload> {
-        let head = self.head_mut();
+        let head_p
+            = self.head.load(Acquire);
+
+        let head
+            = unsafe { &mut *head_p };
 
         if head.insert_version < del_version && head.del_version == Version::MAX {
             head.del_version = del_version;

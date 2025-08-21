@@ -35,10 +35,29 @@ mod utils;
 mod n_test;
 
 fn main() {
+    make_splash();
     let args = env::args();
     let parms = args.collect_vec();
     if parms.len() > 1  {
         match parms[1].as_str() {
+            "test" => {
+                let n = 1_000;
+
+                let tree = Arc::new(new_INDEX(OLC, SkipList));
+                let mut check = HashSet::new();
+
+                while check.len() < n {
+                    let key
+                        = rand::random_range(0..Key::MAX);
+
+                    if !check.contains(&key) {
+                        tree.dispatch(CRUDOperation::Insert(key, Payload::default()));
+                        check.insert(key);
+                    }
+                }
+
+                olap_tests(tree, 200, 12, 0_f32, Key::MAX)
+            }
             "generate" => {
                 let query_file_name= parms[2].as_str();
                 let init_population: usize = parms[3].parse().unwrap();
@@ -115,6 +134,8 @@ fn olap_tests(index: Arc<BTree>,
 {
     println!("Starting OLAPs...");
     let v_index = index.v_index_type;
+    println!(".... BTree via {v_index}");
+
     let mut olaps = vec![];
 
     let _nc = fs::remove_file(format!("{v_index}_olap_skew_{skew}.csv"));
