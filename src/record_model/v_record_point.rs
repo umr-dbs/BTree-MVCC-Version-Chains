@@ -4,12 +4,13 @@ use std::ops::{Deref, DerefMut};
 use serde::{Deserialize, Serialize};
 
 use crate::record_model::Version;
-use crate::record_model::version_index::{VersionIndex, AtomicVersionList};
 use crate::record_model::version_info::DeletedVersionInfo;
-
+use crate::version_index::vanilla::AtomicVersionList;
+use crate::version_index::version_index::VersionIndex;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub enum VersionIndexType {
+    VWEAVER,
     VANILLA,
     SkipList,
     SkipListSynced,
@@ -23,6 +24,7 @@ impl Display for VersionIndexType {
             VersionIndexType::SkipList => write!(f, "SkipList"),
             VersionIndexType::SkipListSynced => write!(f, "SkipListSynced"),
             VersionIndexType::BTree => write!(f, "BTree"),
+            VersionIndexType::VWEAVER => write!(f, "vWeaver"),
         }
     }
 }
@@ -32,7 +34,7 @@ pub(crate) struct VersionedRecordPoint<
     Payload: Default + Clone + Send + Sync + Display + 'static>
 {
     pub key: Key,
-    pub version_index: VersionIndex<Payload>
+    pub version_index: VersionIndex<Key, Payload>
 }
 
 
@@ -58,7 +60,7 @@ impl<Key: Ord + Copy + Hash + Default,
 }
 
 impl<Key: Ord + Copy + Hash + Default, Payload: Default + Clone + Send + Sync + Display + 'static> Deref for VersionedRecordPoint<Key, Payload> {
-    type Target = VersionIndex<Payload>;
+    type Target = VersionIndex<Key, Payload>;
     fn deref(&self) -> &Self::Target {
         &self.version_index
     }
@@ -86,7 +88,7 @@ impl<Key: Ord + Copy + Hash + Default, Payload: Default + Clone + Send + Sync + 
     pub fn new(key: Key, version: Version, payload: Payload, kind: VersionIndexType) -> Self {
         Self {
             key,
-            version_index: VersionIndex::new(kind, payload, version)
+            version_index: VersionIndex::new(key, kind, payload, version)
         }
     }
 
@@ -101,12 +103,12 @@ impl<Key: Ord + Copy + Hash + Default, Payload: Default + Clone + Send + Sync + 
     }
 
     #[inline(always)]
-    pub const fn version_index(&self) -> &VersionIndex<Payload> {
+    pub const fn version_index(&self) -> &VersionIndex<Key, Payload> {
         &self.version_index
     }
 
     #[inline(always)]
-    pub fn version_index_mut(&mut self) -> &mut VersionIndex<Payload> {
+    pub fn version_index_mut(&mut self) -> &mut VersionIndex<Key, Payload> {
         &mut self.version_index
     }
 }

@@ -244,7 +244,7 @@ impl<const FAN_OUT: usize,
                     records_page
                         .as_records_mut()
                         .get_unchecked_mut(pos)
-                        .append(version, payload);
+                        .push(version, payload);
 
                     true
                 }

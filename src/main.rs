@@ -1,27 +1,22 @@
 use std::{env, fs, mem};
 use std::collections::HashSet;
 use std::fs::OpenOptions;
-use std::io::{BufReader, BufWriter, Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::sync::Arc;
-use std::sync::atomic::AtomicUsize;
 use std::thread::spawn;
 use std::time::SystemTime;
 use chrono::{DateTime, Local};
-use crossbeam_skiplist::SkipMap;
 use itertools::Itertools;
 use rand::prelude::SliceRandom;
-use rand::SeedableRng;
 use crate::block::block::Block;
 use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
-use crate::locking::locking_strategy::LockingStrategy;
 use crate::locking::locking_strategy::LockingStrategy::*;
-use crate::n_test::{execute_experiments, format_insertions, hle, GroupConfig, Key, Payload, Sampler, DEBUG, FAN_OUT, NUM_RECORDS};
+use crate::n_test::{format_insertions, hle, Key, Payload, Sampler, DEBUG, FAN_OUT, NUM_RECORDS};
 use crate::record_model::v_record_point::VersionIndexType;
-use crate::record_model::v_record_point::VersionIndexType::{SkipList, SkipListSynced};
+use crate::record_model::v_record_point::VersionIndexType::SkipList;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
-use crate::utils::smart_cell::ENABLE_YIELD;
 
 mod block;
 mod crud_model;
@@ -31,8 +26,8 @@ mod record_model;
 mod tree;
 mod utils;
 // mod test;
-
 mod n_test;
+mod version_index;
 
 fn main() {
     make_splash();
@@ -41,7 +36,11 @@ fn main() {
     if parms.len() > 1  {
         match parms[1].as_str() {
             "test" => {
-                let n = 1_000;
+                let n = parms[2].parse().unwrap();
+                let num_olaps = parms[3].parse().unwrap();
+                let olaps_per_worker = parms[4].parse().unwrap();
+                let skew = parms[5].parse().unwrap();
+                let key_range = parms[6].parse().unwrap_or(Key::MAX);
 
                 let tree = Arc::new(new_INDEX(OLC, SkipList));
                 let mut check = HashSet::new();
@@ -56,7 +55,9 @@ fn main() {
                     }
                 }
 
-                olap_tests(tree, 200, 12, 0_f32, Key::MAX)
+                mem::drop(check);
+
+                olap_tests(tree, num_olaps, olaps_per_worker, skew, key_range)
             }
             "generate" => {
                 let query_file_name= parms[2].as_str();
@@ -93,7 +94,16 @@ fn main() {
                  starting OLAP testings...", format_insertions(num));
                 olap_tests(index, num_olaps, workers_per_thread, skew, range);
             }
-            s => println!("unknown command '{s}'-")
+            // s => println!("unknown command '{s}'-")
+            "help" | _ => {
+                println!("\t Command: generate \
+                <query_file_name> \
+                <init_population> \
+                <total_blocks>\
+                <block_inserts>\
+                <block_updates>\
+                <block_deletes>");
+            }
         }
     }
     else {

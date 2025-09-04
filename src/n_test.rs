@@ -416,7 +416,8 @@ pub fn execute_experiments() {
                 VersionIndexType::VANILLA => "ll",
                 VersionIndexType::SkipList => "sk",
                 VersionIndexType::SkipListSynced => "sk_synced",
-                VersionIndexType::BTree => "bt"
+                VersionIndexType::BTree => "btree",
+                VersionIndexType::VWEAVER => "vweaver"
             };
             if experiment.olap_workers > 0 {
                 if let Either::Right((protocol, v_index_kind)) = experiment.index_handler() {

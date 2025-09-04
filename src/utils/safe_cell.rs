@@ -15,6 +15,18 @@ pub struct SafeCell<E> {
     inner: UnsafeCell<E>
 }
 
+impl<E: Clone> Clone for SafeCell<E> {
+    fn clone(&self) -> Self {
+        Self { inner: UnsafeCell::new(self.as_ref().clone()) }
+    }
+}
+
+impl<E: Default> Default for SafeCell<E> {
+    fn default() -> Self {
+        Self { inner: UnsafeCell::new(Default::default()) }
+    }
+}
+
 /// Impl. Block for SafeCell and for all E.
 impl<E> SafeCell<E> {
     /// Unsafely wraps the e.

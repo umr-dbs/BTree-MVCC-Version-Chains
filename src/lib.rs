@@ -6,7 +6,7 @@ pub mod record_model;
 pub mod tree;
 pub mod utils;
 pub mod n_test;
-
+pub mod version_index;
 type BTreeApi = INDEX;
 
 #[allow(non_camel_case_types)]

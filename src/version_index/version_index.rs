@@ -1,10 +1,8 @@
-use std::collections::HashSet;
 use std::fmt::Display;
+use std::hash::Hash;
 use std::ops::Deref;
-use std::process::exit;
-use std::ptr::{null, null_mut};
 use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{Acquire, Release};
+use std::sync::atomic::Ordering::Acquire;
 use CCBPlusTree::crud_model::crud_api::CRUDDispatcher;
 use CCBPlusTree::crud_model::crud_operation::CRUDOperation;
 use CCBPlusTree::crud_model::crud_operation_result::CRUDOperationResult;
@@ -13,12 +11,13 @@ use CCBPlusTree::record_model::record_point::RecordPoint;
 use CCBPlusTree::test::{dec_key, inc_key};
 use CCBPlusTree::tree::bplus_tree::BPlusTree;
 use crossbeam_skiplist::SkipMap;
-use itertools::Itertools;
 use parking_lot::RwLock;
 use crate::n_test::NUM_RECORDS;
 use crate::record_model::v_record_point::{RecordInfo, VersionIndexType};
+use crate::version_index::vanilla::AtomicVersionList;
 use crate::record_model::Version;
 use crate::utils::safe_cell::SafeCell;
+use crate::version_index::v_weaver::AtomicVWeaverList;
 
 pub const BTREE_V_INDEX_FAN_OUT: usize = NUM_RECORDS / 3;
 pub const BTREE_V_INDEX_NUMBER_RECORDS: usize = BTREE_V_INDEX_FAN_OUT * 2;
@@ -74,21 +73,27 @@ impl<K, V> Into<AtomicPtrWrapper<RwLock<SkipMap<K, V>>>> for SkipMap<K, V> {
     }
 }
 
-impl<Payload: Default + Clone + Send + Sync + Display + 'static> Into<VersionIndex<Payload>>
+impl<Key: Hash + Ord + Copy + Default, 
+    Payload: Default + Clone + Send + Sync + Display + 'static> Into<VersionIndex<Key, Payload>>
 for DexaBTree<Payload> {
-    fn into(self) -> VersionIndex<Payload> {
+    fn into(self) -> VersionIndex<Key, Payload> {
         VersionIndex::DexaBTree(AtomicPtrWrapper(AtomicPtr::new(Box::into_raw(Box::new(self)))))
     }
 }
 
-pub enum VersionIndex<Payload: Clone + Display + Default + Send + Sync + 'static> {
+pub enum VersionIndex<
+    Key: Hash + Ord + Copy + Default, 
+    Payload: Clone + Display + Default + Send + Sync + 'static> 
+{
+    VWEAVER(AtomicVWeaverList<Key, Payload>),
     VANILLA(AtomicVersionList<Payload>),
     SkipList(AtomicPtrWrapper<SkipListImpl<Payload>>),
     SkipListSynced(AtomicPtrWrapper<RwLock<SkipListImpl<Payload>>>),
     DexaBTree(AtomicPtrWrapper<DexaBTree<Payload>>),
 }
 
-impl<Payload: Clone + Default + Display + Send + Sync + 'static> Clone for VersionIndex<Payload> {
+impl<Key: Hash + Ord + Copy + Default, 
+    Payload: Clone + Default + Display + Send + Sync + 'static> Clone for VersionIndex<Key, Payload> {
     fn clone(&self) -> Self {
         match self {
             VersionIndex::VANILLA(version_list) =>
@@ -125,11 +130,14 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> Clone for Versi
                 }
                 n_tree.into()
             }
+            VersionIndex::VWEAVER(weaver) =>
+                VersionIndex::VWEAVER(weaver.clone()) // this is smart clone not the vanilla!
         }
     }
 }
 
-impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Payload> {
+impl<Key: Hash + Ord + Copy + Default, 
+    Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Key, Payload> {
     pub fn len(&self) -> usize {
         match self {
             VersionIndex::VANILLA(version_list) =>
@@ -139,11 +147,13 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
             VersionIndex::SkipListSynced(rw_skip_list) =>
                 rw_skip_list.read().len(),
             VersionIndex::DexaBTree(tree) =>
-                2usize.pow(tree.height() as _) - 1
+                2usize.pow(tree.height() as _) - 1,
+            VersionIndex::VWEAVER(weaver) =>
+                weaver.len()
         }
     }
     #[inline]
-    pub fn new(kind: VersionIndexType, payload: Payload, version: Version) -> Self {
+    pub fn new(key: Key, kind: VersionIndexType, payload: Payload, version: Version) -> Self {
         match kind {
             VersionIndexType::VANILLA =>
                 Self::VANILLA(AtomicVersionList::new(payload, version, None)),
@@ -153,6 +163,8 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                 Self::SkipListSynced(
                     SkipMap::from_iter([(version, SafeCell::new(RecordInfo::new(payload)))]).into()),
             VersionIndexType::BTree => new_btree().into(),
+            VersionIndexType::VWEAVER =>
+                Self::VWEAVER(AtomicVWeaverList::new(key, payload, version))
         }
     }
 
@@ -204,7 +216,73 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                             RecordPoint::new(record.key, record.payload.payload.clone())),
                     _ => unreachable!()
                 },
+            VersionIndex::VWEAVER(weaver) => weaver
+                .find(version)
+                .map(|weaver_node|
+                    RecordPoint::new(
+                        weaver_node.insert_version,
+                        weaver_node.payload.as_ref().clone().unwrap()))
         }
+    }
+
+    #[inline]
+    pub fn push(&self, insert_version: Version, payload: Payload) {
+        match self {
+            VersionIndex::VANILLA(version_list) => version_list
+                .push(insert_version, payload),
+            VersionIndex::SkipList(skip_list) => {
+                let old = skip_list
+                    .back()
+                    .unwrap();
+
+                if old.value().del_version.get().is_none() {
+                    old.value().get_mut().del_version = insert_version.into();
+                }
+                let _
+                    = skip_list.insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
+            }
+            VersionIndex::SkipListSynced(rw_skip_list) => {
+                let skip_list = rw_skip_list.write();
+                let old = skip_list
+                    .back()
+                    .unwrap();
+
+                if old.value().del_version.get().is_none() {
+                    old.value().get_mut().del_version = insert_version.into();
+                }
+                let _
+                    = skip_list.insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
+            }
+            VersionIndex::DexaBTree(tree) => {
+                let (_nv, peek)
+                    = tree.dispatch(CRUDOperation::PeekMax);
+
+                let mut old =
+                    if let CRUDOperationResult::MatchedRecord(Some(entry_record)) = peek {
+                        entry_record
+                    } else {
+                        unreachable!()
+                    };
+
+                if old.payload.del_version.get().is_none() {
+                    old.payload.del_version = insert_version.into();
+
+                    if let CRUDOperationResult::Updated(..) =
+                        tree.dispatch(CRUDOperation::Update(old.key, old.payload.clone())).1
+                    { } else { unreachable!() };
+                }
+
+                match tree
+                    .dispatch(CRUDOperation::Insert(insert_version, RecordInfo::new(payload)))
+                    .1
+                {
+                    CRUDOperationResult::Inserted(..) => { },
+                    _ => unreachable!()
+                }
+            }
+            VersionIndex::VWEAVER(weaver) =>
+                weaver.push(Some(payload), insert_version)
+        };
     }
 
     #[inline]
@@ -266,6 +344,8 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                     _ => unreachable!()
                 }
             }
+            VersionIndex::VWEAVER(weaver) =>
+                weaver.append(Some(payload), insert_version).unwrap()
         }
     }
 
@@ -335,6 +415,8 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
 
                 None
             }
+            VersionIndex::VWEAVER(weaver) =>
+                weaver.delete(del_version)
         }
     }
 
@@ -351,7 +433,9 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                 CRUDOperationResult::MatchedRecord(Some(record)) =>
                     record.payload.del_version.get().is_none(),
                 _ => false
-            }
+            },
+            VersionIndex::VWEAVER(weaver) =>
+                weaver.is_live()
         }
     }
 
@@ -368,215 +452,9 @@ impl<Payload: Clone + Default + Display + Send + Sync + 'static> VersionIndex<Pa
                 CRUDOperationResult::MatchedRecord(Some(record)) =>
                     record.payload.payload.clone(),
                 _ => unreachable!()
-            }
-        }
-    }
-}
-
-
-#[derive(Default, Clone)]
-pub struct VersionedEntry<Payload: Clone + Default + Display + Send + Sync + 'static> {
-    next: Option<*mut VersionedEntry<Payload>>,
-    pub payload: Payload,
-    pub insert_version: Version,
-    pub del_version: Version,
-}
-
-#[derive(Default)]
-pub struct AtomicVersionList<Payload: Clone + Default + Display + Sync + Send + 'static> {
-    head: AtomicPtr<VersionedEntry<Payload>>,
-    // len: AtomicUsize
-}
-
-pub struct VersionListIterator<Payload: Clone + Default + Display + Sync + Send + 'static> {
-    current: Option<VersionedEntry<Payload>>,
-}
-
-impl<Payload: Clone + Default + Display + Sync + Send + 'static> Iterator for VersionListIterator<Payload> {
-    type Item = VersionedEntry<Payload>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.current.take() {
-            Some(version_entry) => {
-                self.current = match version_entry.next {
-                    Some(next) => unsafe { Some((*next).clone()) },
-                    _ => None,
-                };
-
-                Some(version_entry)
-            }
-            _ => None,
-        }
-    }
-}
-
-impl<Payload: Clone + Default + Display + Sync + Send + 'static> Clone for AtomicVersionList<Payload> {
-    fn clone(&self) -> Self {
-        let data = self.iter().collect_vec();
-        let list = AtomicVersionList {
-            head: AtomicPtr::new(null_mut())
-        };
-
-        data.into_iter().rev().for_each(|entry| unsafe {
-            list.insert_entry(entry.insert_version, entry.del_version, entry.payload);
-        });
-
-        list
-    }
-}
-
-impl<Payload: Clone + Default + Sync + Send + Display + 'static> Drop for AtomicVersionList<Payload> {
-    fn drop(&mut self) {
-        unsafe {
-            let mut curr = self.head.load(Acquire);
-
-            // fence(Acquire);
-            while !curr.is_null() {
-                let mut curr_ref = Box::from_raw(curr);
-
-                curr = curr_ref.next.take().unwrap_or(null_mut());
-
-                drop(curr_ref);
-            }
-        }
-    }
-}
-
-impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionList<Payload> {
-    pub fn iter(&self) -> VersionListIterator<Payload> {
-        let ptr = self.head.load(Acquire);
-
-        VersionListIterator {
-            current: match ptr.is_null() {
-                true => None,
-                _ => unsafe {
-                    // fence(Acquire);
-
-                    Some((*ptr).clone())
-                },
             },
+            VersionIndex::VWEAVER(weaver) =>
+                weaver.newest_payload()
         }
-    }
-
-    #[inline(always)]
-    fn head_ref(&self) -> &VersionedEntry<Payload> {
-        let p = unsafe { &*self.head.load(Acquire) };
-
-        // fence(Acquire);
-        p
-    }
-
-    #[inline(always)]
-    pub fn len(&self) -> usize {
-        self.iter().count()
-        // self.len.load(Acquire)
-    }
-
-    // #[inline(always)]
-    // pub fn from(insert_version: Version, payload: Payload) -> Self {
-    //     Self::new(payload, insert_version)
-    // }
-
-    #[inline(always)]
-    pub fn new(payload: Payload, insert_version: Version, del_version: Option<Version>) -> Self {
-        Self {
-            head: AtomicPtr::new(Box::into_raw(Box::new(VersionedEntry {
-                next: None,
-                payload,
-                insert_version,
-                del_version: del_version.unwrap_or(Version::MAX),
-            }))),
-            // len: AtomicUsize::new(1)
-        }
-    }
-
-    #[inline]
-    pub fn find(&self, version: Version) -> Option<&VersionedEntry<Payload>> {
-        let mut curr = self.head_ref();
-
-        loop {
-            if curr.insert_version <= version && curr.del_version > version {
-                return Some(curr);
-            }
-
-            curr = match curr.next {
-                None => break,
-                Some(next) => unsafe { &*next },
-            };
-        }
-
-        None
-    }
-
-    #[inline]
-    unsafe fn insert_entry(&self, insert_version: Version, del_version: Version, payload: Payload) {
-        let head_p
-            = self.head.load(Acquire);
-
-        let next
-            = if head_p.is_null() { None } else { Some(head_p) };
-
-        let new_head = Box::into_raw(Box::new(VersionedEntry {
-            next,
-            payload,
-            insert_version,
-            del_version,
-        }));
-
-        self.head.store(new_head, Release);
-    }
-
-    #[inline]
-    pub fn append(&self, insert_version: Version, payload: Payload) -> Payload {
-        let head_p
-            = self.head.load(Acquire);
-
-        let head
-            = unsafe { &mut *head_p };
-
-        let old_ele = head.payload.clone();
-
-        let new_head = Box::into_raw(Box::new(VersionedEntry {
-            next: Some(head_p),
-            payload,
-            insert_version,
-            del_version: Version::MAX,
-        }));
-
-        if head.del_version == Version::MAX {
-            head.del_version = insert_version;
-        }
-
-        self.head.store(new_head, Release);
-
-        old_ele
-    }
-
-    #[inline]
-    pub fn delete(&self, del_version: Version) -> Option<Payload> {
-        let head_p
-            = self.head.load(Acquire);
-
-        let head
-            = unsafe { &mut *head_p };
-
-        if head.insert_version < del_version && head.del_version == Version::MAX {
-            head.del_version = del_version;
-            // fence(Release);
-
-            Some(head.payload.clone())
-        } else {
-            None
-        }
-    }
-
-    #[inline(always)]
-    pub fn is_live(&self) -> bool {
-        self.head_ref().del_version == Version::MAX
-    }
-
-    #[inline(always)]
-    pub fn newest_payload(&self) -> Payload {
-        self.head_ref().payload.clone()
     }
 }
