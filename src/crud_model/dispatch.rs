@@ -2,14 +2,18 @@ use std::hash::Hash;
 use std::fmt::Display;
 use std::mem;
 use CCBPlusTree::record_model::record_point::RecordPoint;
+use itertools::Itertools;
 use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationInnerReason::{KeyAlreadyDeleted, KeyDoesNotExist};
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
+use crate::record_model::v_record_point::VersionedRecordPoint;
 // use crate::record_model::record_point::RecordPoint;
 use crate::tree::bplus_tree::BPlusTree;
+use crate::version_index::v_weaver::VWeaverKeyIterator;
 
 const DEBUG_VERIFY: bool = false;
+const WEAVER_RANGE_SCAN_ENABLED: bool = true;
 
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
@@ -235,6 +239,50 @@ impl<const FAN_OUT: usize,
                 key_interval,
                 self.committed_version()
             )),
+            CRUDOperation::Range(interval, version)
+            if WEAVER_RANGE_SCAN_ENABLED && self.v_index_type.is_v_weaver() => {
+                let mut path
+                    = Vec::with_capacity(self.height() as _);
+
+                let mut node_visits
+                    = self.next_leaf_page(path.as_mut(), 0, interval.lower);
+
+                let result = loop {
+                    match path.pop() {
+                        Some((fence, leaf_guard)) => {
+                            if let Some(leaf_block) = leaf_guard.deref() {
+                                match leaf_block.as_records()
+                                    .iter()
+                                    .find_map(|record|
+                                        record.find_weaver_node(version))
+                                {
+                                    None => {
+                                        let parent_index
+                                            = path.len() - 1;
+
+                                        node_visits += self.next_leaf_page(
+                                            path.as_mut(),
+                                            parent_index,
+                                            (self.inc_key)(fence.upper)
+                                        );
+                                    } // its enough to find one weaver -> break and use weaver links
+                                    Some(weaver_node) => break
+                                        VWeaverKeyIterator::from(weaver_node)
+                                            .take_while(|node|
+                                                interval.contains(node.key))
+                                            .map(|node| RecordPoint::new(
+                                                node.key,
+                                                node.payload.as_ref().clone().unwrap()))
+                                            .collect_vec()
+                                }
+                            }
+                        }
+                        _ => unreachable!("Sleepy Joe hit me -> next leaf has empty path (leaf)")
+                    }
+                };
+
+                (node_visits, result.into())
+            }
             CRUDOperation::Range(interval, version) => {
                 let (node_visits, guards)
                     = self.traversal_read_range(&interval);

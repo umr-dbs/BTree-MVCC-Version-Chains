@@ -17,6 +17,38 @@ pub enum VersionIndexType {
     BTree
 }
 
+impl VersionIndexType {
+    #[inline(always)]
+    pub const fn is_skiplist(&self) -> bool {
+        if let VersionIndexType::SkipList = self {
+            true
+        }
+        else {
+            false
+        }
+    }
+
+    #[inline(always)]
+    pub const fn is_skiplist_synced(&self) -> bool {
+        if let VersionIndexType::SkipListSynced = self {
+            true
+        }
+        else {
+            false
+        }
+    }
+
+    #[inline(always)]
+    pub const fn is_v_weaver(&self) -> bool {
+        if let VersionIndexType::VWEAVER = self {
+            true
+        }
+        else {
+            false
+        }
+    }
+}
+
 impl Display for VersionIndexType {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {

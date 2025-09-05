@@ -17,7 +17,7 @@ use crate::record_model::v_record_point::{RecordInfo, VersionIndexType};
 use crate::version_index::vanilla::AtomicVersionList;
 use crate::record_model::Version;
 use crate::utils::safe_cell::SafeCell;
-use crate::version_index::v_weaver::AtomicVWeaverList;
+use crate::version_index::v_weaver::{AtomicVWeaverList, WeaverNodeLink};
 
 pub const BTREE_V_INDEX_FAN_OUT: usize = NUM_RECORDS / 3;
 pub const BTREE_V_INDEX_NUMBER_RECORDS: usize = BTREE_V_INDEX_FAN_OUT * 2;
@@ -165,6 +165,16 @@ impl<Key: Hash + Ord + Copy + Default,
             VersionIndexType::BTree => new_btree().into(),
             VersionIndexType::VWEAVER =>
                 Self::VWEAVER(AtomicVWeaverList::new(key, payload, version))
+        }
+    }
+
+    #[inline(always)]
+    pub(crate) fn find_weaver_node(&self, version: Version) -> WeaverNodeLink<Key, Payload> {
+        if let VersionIndex::VWEAVER(weaver) = self  {
+            weaver.find(version)
+        }
+        else {
+            None
         }
     }
 

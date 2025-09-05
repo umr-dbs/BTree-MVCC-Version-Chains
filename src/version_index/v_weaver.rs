@@ -10,7 +10,7 @@ use crate::version_index::version_index::InsertVersion;
 type TowerLevel = usize;
 type WeaverPayload<Payload> = SafeCell<Option<Payload>>; // allows tombstones
 // nullable ptr right away
-type WeaverNodeLink<Key, Payload> = Option<Arc<VWeaverNode<Key, Payload>>>;
+pub(crate) type WeaverNodeLink<Key, Payload> = Option<Arc<VWeaverNode<Key, Payload>>>;
 // wrap memory order for arc loaders and posters into a single indirection instead of 2
 type WeaverHeadNodeLink<Key, Payload> = ArcSwap<VWeaverNode<Key, Payload>>;
 
@@ -25,8 +25,7 @@ pub struct AtomicVWeaverList<
     head: WeaverHeadNodeLink<Key, Payload>, // We use handshake for arc (not refcount) loaders/posters
 }
 
-impl<
-    Key: Hash + Ord + Copy + Default,
+impl<Key: Hash + Ord + Copy + Default,
     Payload: Clone + Default + Display + Sync + Send + 'static> Clone for AtomicVWeaverList<Key, Payload>
 {
     fn clone(&self) -> Self { // shallow clone; check atomicvlists, maybe shallow clone with arcswap
@@ -256,6 +255,17 @@ pub struct VWeaverKeyIterator<
     Payload: Clone + Default + Display + Sync + Send + 'static>
 {
     current: WeaverNodeLink<Key, Payload>,
+}
+
+impl<Key: Hash + Ord + Copy + Default,
+    Payload: Clone + Default + Display + Sync + Send + 'static> VWeaverKeyIterator<Key, Payload>
+{
+    #[inline(always)]
+    pub const fn from(weaver_node: Arc<VWeaverNode<Key, Payload>>) -> Self {
+        Self {
+            current: Some(weaver_node)
+        }
+    }
 }
 
 impl<Key: Hash + Ord + Copy + Default, Payload: Clone + Default + Display + Sync + Send + 'static>

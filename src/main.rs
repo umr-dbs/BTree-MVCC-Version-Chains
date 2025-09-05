@@ -1,5 +1,5 @@
 use std::{env, fs, mem};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufReader, Read, Write};
 use std::sync::Arc;
@@ -15,7 +15,6 @@ use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::locking::locking_strategy::LockingStrategy::*;
 use crate::n_test::{format_insertions, hle, Key, Payload, Sampler, DEBUG, FAN_OUT, NUM_RECORDS};
 use crate::record_model::v_record_point::VersionIndexType;
-use crate::record_model::v_record_point::VersionIndexType::SkipList;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
 
 mod block;
@@ -41,17 +40,45 @@ fn main() {
                 let olaps_per_worker = parms[4].parse().unwrap();
                 let skew = parms[5].parse().unwrap();
                 let key_range = parms[6].parse().unwrap_or(Key::MAX);
+                let v_type = match  parms[7].as_str() {
+                    "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+                    "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+                    "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
+                    "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+                };
 
-                let tree = Arc::new(new_INDEX(OLC, SkipList));
-                let mut check = HashSet::new();
+                let tree = Arc::new(new_INDEX(OLC, v_type));
+                let mut check = HashMap::new();
+                let mut errors = 0;
 
                 while check.len() < n {
                     let key
                         = rand::random_range(0..Key::MAX);
 
-                    if !check.contains(&key) {
-                        tree.dispatch(CRUDOperation::Insert(key, Payload::default()));
-                        check.insert(key);
+                    if !check.contains_key(&key) {
+                        match tree.dispatch(CRUDOperation::Insert(key, Payload::default())).1 {
+                            CRUDOperationResult::Inserted(_, v) => {
+                                check.insert(key, v);
+                            }
+                            _ => {
+                                println!("Error insert key={key}");
+                                errors += 1
+                            }
+                        };
+
+                    }
+                }
+
+                for (k, v) in check.iter() {
+                    match tree.dispatch(CRUDOperation::Point(*k, *v)).1 {
+                        CRUDOperationResult::MatchedRecord(Some(..)) => {}
+                        CRUDOperationResult::MatchedRecord(None) => {
+                            println!("Empty result of point: key={k}, version={v}");
+                        }
+                        _ => {
+                            println!("Error crud point: key={k}, version={v}");
+                            errors += 1
+                        }
                     }
                 }
 
@@ -73,8 +100,9 @@ fn main() {
                 let query_file_name= parms[2].as_str();
                 let v_index = parms[3].as_str().to_lowercase();
                 let v_type = match v_index.as_str() {
-                    "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+                    "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
                     "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+                    "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
                     "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
                 };
 
@@ -341,7 +369,7 @@ fn bernhard_tests() {
     const RANGE_SIZE: Key = 1_000;
     const SKEWs: [f64; 3] = [0f64, 0.4, 1.4];
 
-    const V_INDEX: VersionIndexType = SkipList;
+    const V_INDEX: VersionIndexType = VersionIndexType::SkipList;
 
     let deletions_number = (DELETIONS * INSERTIONS as f64) as usize;
     println!(
