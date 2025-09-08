@@ -31,6 +31,7 @@ pub enum CRUDOperationResult<Key: Ord + Hash + Copy + Default, Payload: Clone + 
 pub enum CRUDOperationInnerReason {
     KeyAlreadyDeleted,
     KeyDoesNotExist,
+    KeyAlreadyExists,
 }
 
 /// Implements pretty printers for TransactionResult.
@@ -69,6 +70,8 @@ impl<Key: Display + Ord + Hash + Copy + Default, Payload: Display + Clone + Defa
                 write!(f, "ZeroAffected(KeyAlreadyDeleted"),
             CRUDOperationResult::ZeroAffected(CRUDOperationInnerReason::KeyDoesNotExist) =>
                 write!(f, "ZeroAffected(KeyDoesNotExist)"),
+            CRUDOperationResult::ZeroAffected(CRUDOperationInnerReason::KeyAlreadyExists) =>
+                write!(f, "ZeroAffected(KeyAlreadyExists)"),
         }
     }
 }

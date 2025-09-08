@@ -7,8 +7,6 @@ use crate::page_model::{Attempts, Height, Level};
 use crate::block::block::BlockGuard;
 use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::page_model::node::Node;
-// use crate::record_model::record_point::RecordPoint;
-use crate::record_model::unsafe_clone::UnsafeClone;
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::record_model::Version;
@@ -259,7 +257,7 @@ impl<const FAN_OUT: usize,
                             .filter_map(|v_record|
                                 match v_record.find(version) {
                                     Some(v_entry) =>
-                                        Some(RecordPoint::new(v_record.key(), v_entry.payload.clone())),
+                                        Some(RecordPoint::new(v_record.key, v_entry.payload)),
                                     _ => None
                                 })
                             .collect::<Vec<_>>();

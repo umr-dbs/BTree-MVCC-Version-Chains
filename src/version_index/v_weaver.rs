@@ -3,8 +3,12 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::sync::Arc;
 use arc_swap::ArcSwap;
+use crate::block::block::BlockGuard;
+use crate::crud_model::crud_api::NodeVisits;
 use crate::record_model::Version;
+use crate::tree::bplus_tree::BPlusTree;
 use crate::utils::safe_cell::SafeCell;
+use crate::utils::smart_cell::sched_yield;
 use crate::version_index::version_index::InsertVersion;
 
 type TowerLevel = usize;
@@ -42,7 +46,7 @@ pub struct VWeaverNode<
 {
     pub(crate) next: WeaverNodeLink<Key, Payload>, // linear to prev versions
     pub(crate) v_ridgy: WeaverNodeLink<Key, Payload>, // skip to prev versions
-    pub(crate) k_ridgy: WeaverNodeLink<Key, Payload>, // linear in key order
+    pub(crate) k_ridgy: SafeCell<WeaverNodeLink<Key, Payload>>, // linear in key order
 
     pub(crate) key: Key,
     pub(crate) payload: WeaverPayload<Payload>,
@@ -53,10 +57,9 @@ pub struct VWeaverNode<
 impl<Key: Hash + Ord + Copy + Default,
     Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVWeaverList<Key, Payload>
 {
-    // assumes caller assures present entry; or default is returned i.e. no panic
     #[inline(always)]
     pub fn newest_payload(&self) -> Payload {
-        self.head.load().payload.as_ref().clone().unwrap_or_default()
+        self.head.load().payload.as_ref().clone().unwrap()
     }
 
     #[inline(always)]
@@ -128,8 +131,8 @@ impl<Key: Hash + Ord + Copy + Default,
             payload,
             insert_version,
             FLAT_LEVEL,
-            Some(head.clone()),
-            Some(head)
+            Some(head.clone()), // next
+            Some(head) // v_ridgy
         ));
 
         self.head.store(new_head);
@@ -149,8 +152,8 @@ impl<Key: Hash + Ord + Copy + Default,
             payload,
             insert_version,
             curr.level.get() + 1,
-            Some(curr.clone()),
-            None
+            Some(curr.clone()), // next
+            None // v_ridgy
         );
 
         let new_tower_level
@@ -159,7 +162,7 @@ impl<Key: Hash + Ord + Copy + Default,
         while curr.level.get() < new_tower_level {
             curr = match curr.v_ridgy.as_ref() {
                 Some(next) => next.clone(),
-                None => break
+                None => unreachable!("weaving sentinel never seen!") // weird; should never happen tho! maybe make it unreachable!(..)
             };
         }
 
@@ -169,19 +172,35 @@ impl<Key: Hash + Ord + Copy + Default,
     }
 
     #[inline]
-    pub fn find(&self, loop_up_version: Version) -> WeaverNodeLink<Key, Payload> {
+    pub fn find(&self, look_up_version: Version) -> WeaverNodeLink<Key, Payload> {
         let mut curr
             = self.head.load_full();
 
-        while curr.level.get() < SENTINEL_LEVEL && curr.insert_version > loop_up_version {
+        while curr.level.get() < SENTINEL_LEVEL && curr.insert_version > look_up_version {
             match curr.v_ridgy.as_ref() {
-                Some(v_ridgy) if v_ridgy.insert_version > loop_up_version =>
+                Some(v_ridgy) if v_ridgy.insert_version > look_up_version =>
                     curr = v_ridgy.clone(),
                 _ => curr = curr.next.as_ref().unwrap().clone(),
             }
         }
 
-        (curr.insert_version <= loop_up_version && curr.is_live()).then(move || curr)
+        (curr.insert_version <= look_up_version && curr.is_live()).then(move || curr)
+    }
+
+    #[inline]
+    pub fn find_any(&self, look_up_version: Version) -> WeaverNodeLink<Key, Payload> {
+        let mut curr
+            = self.head.load_full();
+
+        while curr.level.get() < SENTINEL_LEVEL && curr.insert_version > look_up_version {
+            match curr.v_ridgy.as_ref() {
+                Some(v_ridgy) if v_ridgy.insert_version > look_up_version =>
+                    curr = v_ridgy.clone(),
+                _ => curr = curr.next.as_ref().unwrap().clone(),
+            }
+        }
+
+        (curr.insert_version <= look_up_version).then(move || curr)
     }
 }
 
@@ -204,7 +223,7 @@ impl<Key: Hash + Ord + Copy + Default,
         Self {
             next,
             v_ridgy,
-            k_ridgy: None,
+            k_ridgy: SafeCell::new(None),
             key,
             payload: SafeCell::new(payload),
             insert_version,
@@ -272,12 +291,12 @@ impl<Key: Hash + Ord + Copy + Default, Payload: Clone + Default + Display + Sync
 Iterator for VWeaverKeyIterator<Key, Payload>
 {
     type Item = Arc<VWeaverNode<Key, Payload>>;
-    // TODO: the k_ridgy is never set tho!
+
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             match self.current.take() {
                 Some(weaver_node) => {
-                    self.current = weaver_node.k_ridgy.clone();
+                    self.current = weaver_node.k_ridgy.as_ref().clone();
 
                     match weaver_node.payload.as_ref() {
                         Some(..) => break Some(weaver_node),
@@ -285,6 +304,96 @@ Iterator for VWeaverKeyIterator<Key, Payload>
                     }
                 }
                 _ => break None,
+            }
+        }
+    }
+}
+
+impl<const FAN_OUT: usize,
+    const NUM_RECORDS: usize,
+    Key: Default + Ord + Copy + Hash + Sync + Display,
+    Payload: Default + Clone + Send + Sync + Display + 'static
+> BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>
+{
+    pub(crate) fn v_weaver_k_ridgy_callback(
+        &self,
+        from_leaf_guard: BlockGuard<FAN_OUT, NUM_RECORDS, Key, Payload>,
+        from_key: Key,
+        from_version: Version) -> NodeVisits
+    {
+        debug_assert!(self.v_index_type.is_v_weaver());
+
+        let from_leaf = unsafe {
+            from_leaf_guard.deref_unsafe().unwrap()
+        };
+
+        let current_record_index = from_leaf
+            .as_records()
+            .binary_search_by_key(
+                &from_key, |r| r.key())
+            .unwrap();
+
+        let current_record
+            = unsafe { from_leaf.as_records().get_unchecked(current_record_index) };
+
+        let current_weaver_node = current_record
+            .find_weaver_node_or_tombstone(from_version)
+            .unwrap();
+
+        if current_record_index + 1 < from_leaf.len() {
+            let next_weaver_node = unsafe {
+                from_leaf.as_records()
+                    .get_unchecked(current_record_index + 1)
+                    .find_weaver_node_or_tombstone(from_version)
+            };
+
+            if next_weaver_node.is_some() {
+                *current_weaver_node.k_ridgy.get_mut() = next_weaver_node.clone();
+                match current_weaver_node.next.as_ref() {
+                    Some(prev_version_current_weaver_node) => {
+                        *prev_version_current_weaver_node.k_ridgy.get_mut() = next_weaver_node;
+                    },
+                    _ => { }
+                }
+            }
+            return 0
+        }
+
+        let mut attempts = 0;
+        let mut node_visits = 0;
+        loop {
+            let (next_node_visits, next_leaf_guard)
+                = self.traversal_read_olc((self.inc_key)(from_key));
+
+            node_visits += next_node_visits;
+            let next_leaf = unsafe {
+                next_leaf_guard
+                    .deref_unsafe()
+                    .unwrap()
+            };
+
+            match next_leaf
+                .as_records()
+                .iter()
+                .find_map(|r|
+                    (r.key() > from_key).then(|| r.find_weaver_node_or_tombstone(from_version)))
+            {
+                _ if !next_leaf_guard.is_valid() => { // valid validates only key-movers, not append-ops
+                    attempts += 1;
+                    sched_yield(attempts);
+                    continue
+                },
+                Some(next_weaver_node) if next_weaver_node.is_some() => {
+                    *current_weaver_node.k_ridgy.get_mut() = next_weaver_node.clone();
+                    match current_weaver_node.next.as_ref() {
+                        Some(prev_version_current_weaver_node) => {
+                            *prev_version_current_weaver_node.k_ridgy.get_mut() = next_weaver_node;
+                        },
+                        _ => { }
+                    }
+                    break node_visits
+                }
+                _ => break node_visits
             }
         }
     }

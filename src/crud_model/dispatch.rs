@@ -7,13 +7,11 @@ use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationInnerReason::{KeyAlreadyDeleted, KeyDoesNotExist};
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
-use crate::record_model::v_record_point::VersionedRecordPoint;
-// use crate::record_model::record_point::RecordPoint;
 use crate::tree::bplus_tree::BPlusTree;
 use crate::version_index::v_weaver::VWeaverKeyIterator;
 
 const DEBUG_VERIFY: bool = false;
-const WEAVER_RANGE_SCAN_ENABLED: bool = true;
+const WEAVER_RANGE_SCAN_ENABLED: bool = true; // TODO: Impl k_ridgy
 
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
@@ -27,44 +25,38 @@ impl<const FAN_OUT: usize,
         let olc
             = self.locking_strategy.is_optimistic();
 
+        let is_weaver
+            = self.v_index_type.is_v_weaver();
+
         match crud_operation {
-            CRUDOperation::Delete(key) if olc => {
-                let (node_visits, guard) = self
-                    .traversal_write_olc_append(key);
-
-                let del_version
-                    = self.next_version();
-
-                (node_visits,
-                 match guard.deref_mut()
-                     .unwrap()
-                     .delete_key(key, del_version)
-                 {
-                     Ok(Some(payload)) => CRUDOperationResult::Deleted(key, payload, del_version),
-                     Ok(None) => CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
-                     Err(..) => CRUDOperationResult::ZeroAffected(KeyAlreadyDeleted),
-                 })
-            }
             CRUDOperation::Delete(key) => {
-                let (node_visits, guard) = self
-                    .traversal_write(key);
+                let (node_visits, guard) = if olc {
+                    self.traversal_write_olc_append(key)
+                } else {
+                    self.traversal_write(key)
+                };
 
                 let del_version
                     = self.next_version();
 
-                (node_visits,
                  match guard.deref_mut()
                      .unwrap()
                      .delete_key(key, del_version)
                  {
-                     Ok(Some(payload)) => CRUDOperationResult::Deleted(key, payload, del_version),
-                     Ok(None) => CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
-                     Err(..) => CRUDOperationResult::ZeroAffected(KeyAlreadyDeleted)
-                 })
+                     Ok(Some(payload)) =>
+                         (node_visits + if is_weaver {
+                             node_visits + self.v_weaver_k_ridgy_callback(guard, key, del_version)
+                         } else { 0 }, CRUDOperationResult::Deleted(key, payload, del_version)),
+                     Ok(None) => (node_visits, CRUDOperationResult::ZeroAffected(KeyDoesNotExist)),
+                     Err(..) => (node_visits, CRUDOperationResult::ZeroAffected(KeyAlreadyDeleted)),
+                 }
             }
-            CRUDOperation::Insert(key, payload) if olc => {
-                let (node_visits, guard) = self
-                    .traversal_write_olc(key);
+            CRUDOperation::Insert(key, payload) => {
+                let (node_visits, guard) = if olc {
+                    self.traversal_write_olc_append(key)
+                } else {
+                    self.traversal_write(key)
+                };
 
                 let ingest_version = self.next_version();
 
@@ -87,27 +79,25 @@ impl<const FAN_OUT: usize,
                     res
                 }
                 else {
-                    (node_visits, guard.deref_mut()
+                    if guard.deref_mut()
                         .unwrap()
                         .push_record_point(key, payload, ingest_version, self.v_index_type)
-                        .then(|| CRUDOperationResult::Inserted(key, ingest_version))
-                        .unwrap_or_default())
+                    {
+                        (node_visits + if is_weaver {
+                            node_visits + self.v_weaver_k_ridgy_callback(guard, key, ingest_version)
+                        } else { 0 }, CRUDOperationResult::Inserted(key, ingest_version))
+                    }
+                    else {
+                        (node_visits, CRUDOperationResult::Error)
+                    }
                 }
             }
-            CRUDOperation::Insert(key, payload) => {
-                let (node_visits, guard) = self
-                    .traversal_write(key);
-
-                let ingest_version = self.next_version();
-                (node_visits, guard.deref_mut()
-                    .unwrap()
-                    .push_record_point(key, payload, ingest_version, self.v_index_type)
-                    .then(|| CRUDOperationResult::Inserted(key, ingest_version))
-                    .unwrap_or_default())
-            }
-            CRUDOperation::Update(key, payload) if olc => {
-                let (node_visits, guard) = self
-                    .traversal_write_olc_append(key);
+            CRUDOperation::Update(key, payload) => {
+                let (node_visits, guard) = if olc {
+                    self.traversal_write_olc_append(key)
+                } else {
+                    self.traversal_write(key)
+                };
 
                 let update_version = self.next_version();
                 if DEBUG_VERIFY {
@@ -136,37 +126,21 @@ impl<const FAN_OUT: usize,
                     res
                 }
                 else {
-                    (node_visits, match guard
+                    match guard
                         .deref_mut()
                         .unwrap()
                         .update_record_point(key, payload, update_version)
                     {
                         Ok(Some(payload)) =>
-                            CRUDOperationResult::Updated(key, payload, update_version),
+                            (node_visits + if is_weaver {
+                                node_visits + self.v_weaver_k_ridgy_callback(guard, key, update_version)
+                            } else { 0 }, CRUDOperationResult::Updated(key, payload, update_version)),
                         Ok(None) =>
-                            CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
+                            (node_visits, CRUDOperationResult::ZeroAffected(KeyDoesNotExist)),
                         Err(..) =>
-                            CRUDOperationResult::Error
-                    })
+                            (node_visits, CRUDOperationResult::Error)
+                    }
                 }
-            }
-            CRUDOperation::Update(key, payload) => {
-                let (node_visits, guard) = self
-                    .traversal_write(key);
-
-                let update_version = self.next_version();
-                (node_visits, match guard
-                    .deref_mut()
-                    .unwrap()
-                    .update_record_point(key, payload, update_version)
-                {
-                    Ok(Some(payload)) =>
-                        CRUDOperationResult::Updated(key, payload, update_version),
-                    Ok(None) =>
-                        CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
-                    Err(..) =>
-                        CRUDOperationResult::Error
-                })
             }
             CRUDOperation::Point(key, version) if olc => match self.traversal_read_olc(key) {
                 (node_visits, leaf_guard) => unsafe {
@@ -225,22 +199,12 @@ impl<const FAN_OUT: usize,
                         .into())
                 }
             },
-            // CRUDOperation::Range(key_interval, version) if olc => {
-            //     let mut path
-            //         = Vec::with_capacity(self.root.height() as _);
-            //
-            //     let node_visits = self.next_leaf_page(path.as_mut(),
-            //                                           0,
-            //                                           key_interval.lower);
-            //
-            //     self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
-            // }
             CRUDOperation::RangeSi(key_interval) => self.dispatch(CRUDOperation::Range(
                 key_interval,
                 self.committed_version()
             )),
             CRUDOperation::Range(interval, version)
-            if WEAVER_RANGE_SCAN_ENABLED && self.v_index_type.is_v_weaver() => {
+            if WEAVER_RANGE_SCAN_ENABLED && is_weaver => {
                 let mut path
                     = Vec::with_capacity(self.height() as _);
 
@@ -251,12 +215,32 @@ impl<const FAN_OUT: usize,
                     match path.pop() {
                         Some((fence, leaf_guard)) => {
                             if let Some(leaf_block) = leaf_guard.deref() {
-                                match leaf_block.as_records()
+                                match leaf_block
+                                    .as_records()
                                     .iter()
+                                    .skip_while(|record|
+                                        !interval.contains(record.key))
                                     .find_map(|record|
                                         record.find_weaver_node(version))
                                 {
-                                    None => {
+                                    _ if !leaf_guard.is_valid() => {
+                                        let parent_index
+                                            = path.len() - 1;
+
+                                        node_visits += self.next_leaf_page(
+                                            path.as_mut(),
+                                            parent_index,
+                                            interval.lower)
+                                    },
+                                    Some(weaver_node) =>
+                                        break VWeaverKeyIterator::from(weaver_node)
+                                            .take_while(|node|
+                                                interval.contains(node.key))
+                                            .map(|node| RecordPoint::new(
+                                                node.key,
+                                                node.payload.as_ref().clone().unwrap()))
+                                            .collect_vec(),
+                                    _ => {
                                         let parent_index
                                             = path.len() - 1;
 
@@ -265,24 +249,26 @@ impl<const FAN_OUT: usize,
                                             parent_index,
                                             (self.inc_key)(fence.upper)
                                         );
-                                    } // its enough to find one weaver -> break and use weaver links
-                                    Some(weaver_node) => break
-                                        VWeaverKeyIterator::from(weaver_node)
-                                            .take_while(|node|
-                                                interval.contains(node.key))
-                                            .map(|node| RecordPoint::new(
-                                                node.key,
-                                                node.payload.as_ref().clone().unwrap()))
-                                            .collect_vec()
+                                    }
                                 }
                             }
                         }
-                        _ => unreachable!("Sleepy Joe hit me -> next leaf has empty path (leaf)")
+                        _ => break Vec::with_capacity(0)
                     }
                 };
 
                 (node_visits, result.into())
             }
+            // CRUDOperation::Range(key_interval, version) if olc => {
+            //     let mut path
+            //         = Vec::with_capacity(self.root.height() as _);
+            //
+            //     let node_visits = self.next_leaf_page(path.as_mut(),
+            //                                           0,
+            //                                           key_interval.lower);
+            //
+            //     self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
+            // }
             CRUDOperation::Range(interval, version) => {
                 let (node_visits, guards)
                     = self.traversal_read_range(&interval);

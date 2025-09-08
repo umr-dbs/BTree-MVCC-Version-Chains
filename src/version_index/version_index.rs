@@ -178,6 +178,16 @@ impl<Key: Hash + Ord + Copy + Default,
         }
     }
 
+    #[inline(always)]
+    pub(crate) fn find_weaver_node_or_tombstone(&self, version: Version) -> WeaverNodeLink<Key, Payload> {
+        if let VersionIndex::VWEAVER(weaver) = self  {
+            weaver.find_any(version)
+        }
+        else {
+            None
+        }
+    }
+
     #[inline]
     pub fn find(&self, version: Version) -> Option<RecordPoint<Version, Payload>> {
         match self {
