@@ -415,7 +415,7 @@ pub fn execute_experiments() {
             let v_index_prefix = match experiment.v_index_type {
                 VersionIndexType::VANILLA => "ll",
                 VersionIndexType::SkipList => "sk",
-                VersionIndexType::SkipListSynced => "sk_synced",
+                // VersionIndexType::SkipListSynced => "sk_synced",
                 VersionIndexType::BTree => "btree",
                 VersionIndexType::VWEAVER => "vweaver"
             };

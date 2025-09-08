@@ -4,7 +4,6 @@ use std::sync::Arc;
 use arc_swap::ArcSwap;
 use crate::record_model::Version;
 
-// TODO: adjust ptrs via ArcSwap like weaver for efficient shallow thread-safe clone
 type VanillaNodeLink<Payload> = Option<Arc<VersionedEntry<Payload>>>;
 
 #[derive(Default, Clone)]

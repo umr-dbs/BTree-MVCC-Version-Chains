@@ -13,7 +13,7 @@ pub enum VersionIndexType {
     VWEAVER,
     VANILLA,
     SkipList,
-    SkipListSynced,
+    // SkipListSynced,
     BTree
 }
 
@@ -28,15 +28,15 @@ impl VersionIndexType {
         }
     }
 
-    #[inline(always)]
-    pub const fn is_skiplist_synced(&self) -> bool {
-        if let VersionIndexType::SkipListSynced = self {
-            true
-        }
-        else {
-            false
-        }
-    }
+    // #[inline(always)]
+    // pub const fn is_skiplist_synced(&self) -> bool {
+    //     if let VersionIndexType::SkipListSynced = self {
+    //         true
+    //     }
+    //     else {
+    //         false
+    //     }
+    // }
 
     #[inline(always)]
     pub const fn is_v_weaver(&self) -> bool {
@@ -54,7 +54,7 @@ impl Display for VersionIndexType {
         match self {
             VersionIndexType::VANILLA => write!(f, "VANILLA"),
             VersionIndexType::SkipList => write!(f, "SkipList"),
-            VersionIndexType::SkipListSynced => write!(f, "SkipListSynced"),
+            // VersionIndexType::SkipListSynced => write!(f, "SkipListSynced"),
             VersionIndexType::BTree => write!(f, "BTree"),
             VersionIndexType::VWEAVER => write!(f, "vWeaver"),
         }
