@@ -1,11 +1,7 @@
 use std::cell::Cell;
 use std::fmt::Display;
-use std::ptr::null_mut;
 use std::sync::Arc;
-use std::sync::atomic::AtomicPtr;
-use std::sync::atomic::Ordering::{Acquire, Release};
-use arc_swap::{ArcSwap, Guard};
-use itertools::Itertools;
+use arc_swap::ArcSwap;
 use crate::record_model::Version;
 
 // TODO: adjust ptrs via ArcSwap like weaver for efficient shallow thread-safe clone

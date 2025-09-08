@@ -166,7 +166,7 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline(always)]
-    pub fn records_mut(&self) -> ShadowVec<VersionedRecordPoint<Key, Payload>> {
+    pub(crate) fn records_mut(&self) -> ShadowVec<VersionedRecordPoint<Key, Payload>> {
         match self {
             Node::Leaf(records_page) =>
                 records_page.as_records_mut(),
@@ -175,7 +175,7 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline(always)]
-    pub fn as_records(&self) -> &[VersionedRecordPoint<Key, Payload>] {
+    pub(crate) fn as_records(&self) -> &[VersionedRecordPoint<Key, Payload>] {
         match self {
             Node::Leaf(records_page) =>
                 records_page.as_records(),

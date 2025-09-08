@@ -2,13 +2,11 @@ use std::hash::Hash;
 use std::fmt::Display;
 use std::mem;
 use CCBPlusTree::record_model::record_point::RecordPoint;
-use itertools::Itertools;
 use crate::crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationInnerReason::{KeyAlreadyDeleted, KeyDoesNotExist};
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::tree::bplus_tree::BPlusTree;
-use crate::version_index::v_weaver::VWeaverKeyIterator;
 
 const DEBUG_VERIFY: bool = false;
 const WEAVER_RANGE_SCAN_ENABLED: bool = true; // TODO: Impl k_ridgy
@@ -45,7 +43,7 @@ impl<const FAN_OUT: usize,
                  {
                      Ok(Some(payload)) =>
                          (node_visits + if is_weaver {
-                             node_visits + self.v_weaver_k_ridgy_callback(guard, key, del_version)
+                             node_visits + self.weaver_callback(guard, key, del_version)
                          } else { 0 }, CRUDOperationResult::Deleted(key, payload, del_version)),
                      Ok(None) => (node_visits, CRUDOperationResult::ZeroAffected(KeyDoesNotExist)),
                      Err(..) => (node_visits, CRUDOperationResult::ZeroAffected(KeyAlreadyDeleted)),
@@ -84,7 +82,7 @@ impl<const FAN_OUT: usize,
                         .push_record_point(key, payload, ingest_version, self.v_index_type)
                     {
                         (node_visits + if is_weaver {
-                            node_visits + self.v_weaver_k_ridgy_callback(guard, key, ingest_version)
+                            node_visits + self.weaver_callback(guard, key, ingest_version)
                         } else { 0 }, CRUDOperationResult::Inserted(key, ingest_version))
                     }
                     else {
@@ -133,7 +131,7 @@ impl<const FAN_OUT: usize,
                     {
                         Ok(Some(payload)) =>
                             (node_visits + if is_weaver {
-                                node_visits + self.v_weaver_k_ridgy_callback(guard, key, update_version)
+                                node_visits + self.weaver_callback(guard, key, update_version)
                             } else { 0 }, CRUDOperationResult::Updated(key, payload, update_version)),
                         Ok(None) =>
                             (node_visits, CRUDOperationResult::ZeroAffected(KeyDoesNotExist)),
@@ -205,96 +203,47 @@ impl<const FAN_OUT: usize,
             )),
             CRUDOperation::Range(interval, version)
             if WEAVER_RANGE_SCAN_ENABLED && is_weaver => {
+                let (node_visits, matches)
+                    = self.weaver_scan_dispatch(interval, version);
+
+                (node_visits, matches.into())
+            }
+            CRUDOperation::Range(key_interval, version) => {
                 let mut path
-                    = Vec::with_capacity(self.height() as _);
+                    = Vec::with_capacity(self.root.height() as _);
 
-                let mut node_visits
-                    = self.next_leaf_page(path.as_mut(), 0, interval.lower);
+                let node_visits = self.next_leaf_page(path.as_mut(),
+                                                      0,
+                                                      key_interval.lower);
 
-                let result = loop {
-                    match path.pop() {
-                        Some((fence, leaf_guard)) => {
-                            if let Some(leaf_block) = leaf_guard.deref() {
-                                match leaf_block
-                                    .as_records()
-                                    .iter()
-                                    .skip_while(|record|
-                                        !interval.contains(record.key))
-                                    .find_map(|record|
-                                        record.find_weaver_node(version))
-                                {
-                                    _ if !leaf_guard.is_valid() => {
-                                        let parent_index
-                                            = path.len() - 1;
-
-                                        node_visits += self.next_leaf_page(
-                                            path.as_mut(),
-                                            parent_index,
-                                            interval.lower)
-                                    },
-                                    Some(weaver_node) =>
-                                        break VWeaverKeyIterator::from(weaver_node)
-                                            .take_while(|node|
-                                                interval.contains(node.key))
-                                            .map(|node| RecordPoint::new(
-                                                node.key,
-                                                node.payload.as_ref().clone().unwrap()))
-                                            .collect_vec(),
-                                    _ => {
-                                        let parent_index
-                                            = path.len() - 1;
-
-                                        node_visits += self.next_leaf_page(
-                                            path.as_mut(),
-                                            parent_index,
-                                            (self.inc_key)(fence.upper)
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                        _ => break Vec::with_capacity(0)
-                    }
-                };
-
-                (node_visits, result.into())
+                self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
             }
-            // CRUDOperation::Range(key_interval, version) if olc => {
-            //     let mut path
-            //         = Vec::with_capacity(self.root.height() as _);
+            // CRUDOperation::Range(interval, version) => {
+            //     let (node_visits, guards)
+            //         = self.traversal_read_range(&interval);
             //
-            //     let node_visits = self.next_leaf_page(path.as_mut(),
-            //                                           0,
-            //                                           key_interval.lower);
-            //
-            //     self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
+            //     (node_visits,
+            //      guards.into_iter()
+            //          .flat_map(|(_block, guard)| guard
+            //              .deref()
+            //              .unwrap()
+            //              .as_ref()
+            //              .as_records()
+            //              .iter()
+            //              .skip_while(|record| !interval.contains(record.key))
+            //              .filter_map(|record| {
+            //                  if let Some(v_e) = record.find(version) {
+            //                      Some((record.key(), v_e.payload.clone()))
+            //                  } else {
+            //                      None
+            //                  }
+            //              })
+            //              .take_while(|(key, ..)| interval.contains(*key))
+            //              .map(|(key, v_payload)| RecordPoint::new(key, v_payload.clone()))
+            //              .collect::<Vec<_>>())
+            //          .collect::<Vec<_>>()
+            //          .into())
             // }
-            CRUDOperation::Range(interval, version) => {
-                let (node_visits, guards)
-                    = self.traversal_read_range(&interval);
-
-                (node_visits,
-                 guards.into_iter()
-                     .flat_map(|(_block, guard)| guard
-                         .deref()
-                         .unwrap()
-                         .as_ref()
-                         .as_records()
-                         .iter()
-                         .skip_while(|record| !interval.contains(record.key))
-                         .filter_map(|record| {
-                             if let Some(v_e) = record.find(version) {
-                                 Some((record.key(), v_e.payload.clone()))
-                             } else {
-                                 None
-                             }
-                         })
-                         .take_while(|(key, ..)| interval.contains(*key))
-                         .map(|(key, v_payload)| RecordPoint::new(key, v_payload.clone()))
-                         .collect::<Vec<_>>())
-                     .collect::<Vec<_>>()
-                     .into())
-            }
             CRUDOperation::PeekMin if olc => match self.traversal_read_olc(self.min_key) {
                 (node_visits, leaf_guard) => unsafe {
                     let leaf_page = leaf_guard

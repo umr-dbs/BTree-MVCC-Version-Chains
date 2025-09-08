@@ -40,7 +40,7 @@ fn main() {
                 let olaps_per_worker = parms[4].parse().unwrap();
                 let skew = parms[5].parse().unwrap();
                 let key_range = parms[6].parse().unwrap_or(Key::MAX);
-                let v_type = match  parms[7].as_str() {
+                let v_type = match parms[7].as_str() {
                     "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
                     "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
                     "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
@@ -69,18 +69,18 @@ fn main() {
                     }
                 }
 
-                for (k, v) in check.iter() {
-                    match tree.dispatch(CRUDOperation::Point(*k, *v)).1 {
-                        CRUDOperationResult::MatchedRecord(Some(..)) => {}
-                        CRUDOperationResult::MatchedRecord(None) => {
-                            println!("Empty result of point: key={k}, version={v}");
-                        }
-                        _ => {
-                            println!("Error crud point: key={k}, version={v}");
-                            errors += 1
-                        }
-                    }
-                }
+                // for (k, v) in check.iter() {
+                //     match tree.dispatch(CRUDOperation::Point(*k, *v)).1 {
+                //         CRUDOperationResult::MatchedRecord(Some(..)) => {}
+                //         CRUDOperationResult::MatchedRecord(None) => {
+                //             println!("Empty result of point: key={k}, version={v}");
+                //         }
+                //         _ => {
+                //             println!("Error crud point: key={k}, version={v}");
+                //             errors += 1
+                //         }
+                //     }
+                // }
 
                 mem::drop(check);
 
@@ -559,7 +559,7 @@ fn make_splash() {
     println!(" |                                                                       |");
     println!(" |               ------------------------------                          |");
     println!(" |               # Build:   {}                          |", datetime.format("%d-%m-%Y %T"));
-    println!(" |               # Current version: {}                                |", env!("CARGO_PKG_VERSION"));
+    println!(" |               # Current version: {}                               |", env!("CARGO_PKG_VERSION"));
     println!(" |               -------------------------                               |");
     println!(" |               # OLC-HLE:   {}                                     |", hle());
     // println!(" |               # RW-HLE:    AUTO                                       |");

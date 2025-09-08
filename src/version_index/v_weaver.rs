@@ -3,20 +3,23 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::sync::Arc;
 use arc_swap::ArcSwap;
+use CCBPlusTree::record_model::record_point::RecordPoint;
 use crate::block::block::BlockGuard;
 use crate::crud_model::crud_api::NodeVisits;
 use crate::record_model::Version;
 use crate::tree::bplus_tree::BPlusTree;
+use crate::utils::interval::Interval;
 use crate::utils::safe_cell::SafeCell;
 use crate::utils::smart_cell::sched_yield;
 use crate::version_index::version_index::InsertVersion;
 
 type TowerLevel = usize;
 type WeaverPayload<Payload> = SafeCell<Option<Payload>>; // allows tombstones
+pub(crate) type WeaverNode<Key, Payload> = Arc<VWeaverNodeSt<Key, Payload>>;
 // nullable ptr right away
-pub(crate) type WeaverNodeLink<Key, Payload> = Option<Arc<VWeaverNode<Key, Payload>>>;
+pub(crate) type WeaverNodeLink<Key, Payload> = Option<WeaverNode<Key, Payload>>;
 // wrap memory order for arc loaders and posters into a single indirection instead of 2
-type WeaverHeadNodeLink<Key, Payload> = ArcSwap<VWeaverNode<Key, Payload>>;
+type WeaverHeadNodeLink<Key, Payload> = ArcSwap<VWeaverNodeSt<Key, Payload>>;
 
 const FLAT_LEVEL: TowerLevel = 0; // all linear links
 const SENTINEL_LEVEL: TowerLevel = TowerLevel::MAX; // head starter node
@@ -40,7 +43,7 @@ impl<Key: Hash + Ord + Copy + Default,
 }
 
 #[derive(Default, Clone)]
-pub struct VWeaverNode<
+pub struct VWeaverNodeSt<
     Key: Hash + Ord + Copy + Default,
     Payload: Clone + Default + Display + Send + Sync + 'static>
 {
@@ -82,7 +85,7 @@ impl<Key: Hash + Ord + Copy + Default,
     #[inline(always)]
     pub fn new(key: Key, payload: Payload, insert_version: InsertVersion) -> Self {
         Self {
-            head: ArcSwap::new(Arc::new(VWeaverNode::new(
+            head: ArcSwap::new(Arc::new(VWeaverNodeSt::new(
                 key,
                 Some(payload),
                 insert_version,
@@ -126,7 +129,7 @@ impl<Key: Hash + Ord + Copy + Default,
         let old_payload
             = head.payload.as_ref().clone(); // handles tombstones, e.g. insert call
 
-        let new_head = Arc::new(VWeaverNode::new_with(
+        let new_head = Arc::new(VWeaverNodeSt::new_with(
             head.key,
             payload,
             insert_version,
@@ -147,7 +150,7 @@ impl<Key: Hash + Ord + Copy + Default,
         let old_payload
             = curr.payload.as_ref().clone(); // handles tombstones, e.g. insert call
 
-        let mut new_tower_node = VWeaverNode::new_with(
+        let mut new_tower_node = VWeaverNodeSt::new_with(
             curr.key,
             payload,
             insert_version,
@@ -162,7 +165,7 @@ impl<Key: Hash + Ord + Copy + Default,
         while curr.level.get() < new_tower_level {
             curr = match curr.v_ridgy.as_ref() {
                 Some(next) => next.clone(),
-                None => unreachable!("weaving sentinel never seen!") // weird; should never happen tho! maybe make it unreachable!(..)
+                None => unreachable!("weaving sentinel never seen!")
             };
         }
 
@@ -171,11 +174,11 @@ impl<Key: Hash + Ord + Copy + Default,
         old_payload
     }
 
-    #[inline]
-    pub fn find(&self, look_up_version: Version) -> WeaverNodeLink<Key, Payload> {
-        let mut curr
-            = self.head.load_full();
-
+    #[inline(always)]
+    pub fn find_from(mut curr: WeaverNode<Key, Payload>,
+                     look_up_version: Version,
+                     allow_tombstone: bool) -> WeaverNodeLink<Key, Payload>
+    {
         while curr.level.get() < SENTINEL_LEVEL && curr.insert_version > look_up_version {
             match curr.v_ridgy.as_ref() {
                 Some(v_ridgy) if v_ridgy.insert_version > look_up_version =>
@@ -184,28 +187,23 @@ impl<Key: Hash + Ord + Copy + Default,
             }
         }
 
-        (curr.insert_version <= look_up_version && curr.is_live()).then(move || curr)
+        (curr.insert_version <= look_up_version && (!allow_tombstone && curr.is_live() || allow_tombstone))
+            .then(move || curr)
+    }
+
+    #[inline]
+    pub fn find(&self, look_up_version: Version) -> WeaverNodeLink<Key, Payload> {
+        Self::find_from(self.head.load_full(), look_up_version, false)
     }
 
     #[inline]
     pub fn find_any(&self, look_up_version: Version) -> WeaverNodeLink<Key, Payload> {
-        let mut curr
-            = self.head.load_full();
-
-        while curr.level.get() < SENTINEL_LEVEL && curr.insert_version > look_up_version {
-            match curr.v_ridgy.as_ref() {
-                Some(v_ridgy) if v_ridgy.insert_version > look_up_version =>
-                    curr = v_ridgy.clone(),
-                _ => curr = curr.next.as_ref().unwrap().clone(),
-            }
-        }
-
-        (curr.insert_version <= look_up_version).then(move || curr)
+        Self::find_from(self.head.load_full(), look_up_version, true)
     }
 }
 
 impl<Key: Hash + Ord + Copy + Default,
-    Payload: Clone + Default + Display + Sync + Send + 'static> VWeaverNode<Key, Payload>
+    Payload: Clone + Default + Display + Sync + Send + 'static> VWeaverNodeSt<Key, Payload>
 {
     #[inline(always)]
     fn new(key: Key, payload: Option<Payload>, insert_version: InsertVersion, level: TowerLevel) -> Self {
@@ -240,6 +238,13 @@ impl<Key: Hash + Ord + Copy + Default,
     pub fn is_deleted(&self) -> bool {
         !self.is_live()
     }
+
+    #[inline(always)]
+    pub fn find(curr: WeaverNode<Key, Payload>, version: Version, allow_tombstone: bool) 
+        -> WeaverNodeLink<Key, Payload> 
+    {
+        AtomicVWeaverList::find_from(curr, version, allow_tombstone)
+    }
 }
 
 pub struct VWeaverVersionIterator<
@@ -252,7 +257,7 @@ pub struct VWeaverVersionIterator<
 impl<Key: Hash + Ord + Copy + Default,
     Payload: Clone + Default + Display + Sync + Send + 'static>
 Iterator for VWeaverVersionIterator<Key, Payload> {
-    type Item = Arc<VWeaverNode<Key, Payload>>;
+    type Item = WeaverNode<Key, Payload>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop { // skips tombstones; is that even desired?
@@ -269,7 +274,7 @@ Iterator for VWeaverVersionIterator<Key, Payload> {
     }
 }
 
-pub struct VWeaverKeyIterator<
+pub struct VWeaverKeyRidgyIterator<
     Key: Hash + Ord + Copy + Default,
     Payload: Clone + Default + Display + Sync + Send + 'static>
 {
@@ -277,10 +282,10 @@ pub struct VWeaverKeyIterator<
 }
 
 impl<Key: Hash + Ord + Copy + Default,
-    Payload: Clone + Default + Display + Sync + Send + 'static> VWeaverKeyIterator<Key, Payload>
+    Payload: Clone + Default + Display + Sync + Send + 'static> VWeaverKeyRidgyIterator<Key, Payload>
 {
     #[inline(always)]
-    pub const fn from(weaver_node: Arc<VWeaverNode<Key, Payload>>) -> Self {
+    pub const fn from(weaver_node: WeaverNode<Key, Payload>) -> Self {
         Self {
             current: Some(weaver_node)
         }
@@ -288,9 +293,9 @@ impl<Key: Hash + Ord + Copy + Default,
 }
 
 impl<Key: Hash + Ord + Copy + Default, Payload: Clone + Default + Display + Sync + Send + 'static>
-Iterator for VWeaverKeyIterator<Key, Payload>
+Iterator for VWeaverKeyRidgyIterator<Key, Payload>
 {
-    type Item = Arc<VWeaverNode<Key, Payload>>;
+    type Item = WeaverNode<Key, Payload>;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
@@ -315,7 +320,79 @@ impl<const FAN_OUT: usize,
     Payload: Default + Clone + Send + Sync + Display + 'static
 > BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>
 {
-    pub(crate) fn v_weaver_k_ridgy_callback(
+    pub(crate) fn weaver_scan_dispatch(&self, mut interval: Interval<Key>, version: Version)
+                                       -> (NodeVisits, Vec<RecordPoint<Key, Payload>>)
+    {
+        debug_assert!(self.v_index_type.is_v_weaver());
+
+        let mut path
+            = Vec::with_capacity(self.height() as _);
+
+        let mut node_visits
+            = 0;
+
+        let mut result = vec![];
+        let mut parent_index = 0;
+
+        loop {
+            node_visits +=
+                self.next_leaf_page(path.as_mut(), parent_index, interval.lower);
+
+            parent_index
+                = path.len().checked_sub(2).unwrap_or(0);
+
+            match path.pop() {
+                Some((leaf_fence, leaf_guard)) => unsafe {
+                    if let Some(leaf_block) = leaf_guard.deref_unsafe() {
+                        match leaf_block
+                            .as_records()
+                            .iter()
+                            .skip_while(|record|
+                                !interval.contains(record.key))
+                            .find_map(|record|
+                                record.find_weaver_node(version))
+                        {
+                            _ if !leaf_guard.is_valid() => continue,
+                            Some(weaver_node) => {
+                                let mut last_key = None;
+                                VWeaverKeyRidgyIterator::from(weaver_node)
+                                    .take_while(|node|
+                                        interval.contains(node.key))
+                                    .filter_map(|node|
+                                        VWeaverNodeSt::find(node, version, false))
+                                    .map(|node| RecordPoint::new(
+                                        node.key,
+                                        node.payload.as_ref().clone().unwrap()))
+                                    .for_each(|node| {
+                                        last_key = Some(node.key); // for fence clearing
+                                        result.push(node);
+                                    });
+
+                                match last_key {
+                                    None => interval.lower = (self.inc_key)(leaf_fence.upper),
+                                    Some(last_key) =>
+                                        interval.lower = (self.inc_key)(last_key)
+                                }
+                            },
+                            _ => interval.lower = (self.inc_key)(leaf_fence.upper)
+                        }
+
+                        if interval.lower >= interval.upper { // checked after dispatch
+                            break
+                        }
+                    }
+                    else {
+                        unreachable!("Weaver scan dispatch: Path doesn't contain valid blocks")
+                    }
+                }
+                _ => break // empty index
+            }
+        }
+
+        (node_visits, result)
+    }
+
+    pub(crate) fn weaver_callback( // on_modifiers callback
         &self,
         from_leaf_guard: BlockGuard<FAN_OUT, NUM_RECORDS, Key, Payload>,
         from_key: Key,
@@ -340,6 +417,11 @@ impl<const FAN_OUT: usize,
             .find_weaver_node_or_tombstone(from_version)
             .unwrap();
 
+        let current_next_weaver_node = match current_weaver_node.next.as_ref() {
+            Some(curr_next) if curr_next.k_ridgy.is_none() => curr_next.clone(),
+            _ => return 0,
+        };
+
         if current_record_index + 1 < from_leaf.len() {
             let next_weaver_node = unsafe {
                 from_leaf.as_records()
@@ -348,24 +430,26 @@ impl<const FAN_OUT: usize,
             };
 
             if next_weaver_node.is_some() {
-                *current_weaver_node.k_ridgy.get_mut() = next_weaver_node.clone();
-                match current_weaver_node.next.as_ref() {
-                    Some(prev_version_current_weaver_node) => {
-                        *prev_version_current_weaver_node.k_ridgy.get_mut() = next_weaver_node;
-                    },
-                    _ => { }
-                }
+                *current_next_weaver_node.k_ridgy.get_mut() = next_weaver_node.clone();
             }
             return 0
         }
 
         let mut attempts = 0;
         let mut node_visits = 0;
-        loop {
-            let (next_node_visits, next_leaf_guard)
-                = self.traversal_read_olc((self.inc_key)(from_key));
 
-            node_visits += next_node_visits;
+        let mut path = Vec::with_capacity(self.height() as _);
+        let mut parent_index = 0;
+        loop {
+            node_visits
+                += self.next_leaf_page(path.as_mut(), parent_index, (self.inc_key)(from_key));
+
+            parent_index
+                = path.len().checked_sub(2).unwrap_or(0);
+
+            let (_leaf_fence, next_leaf_guard)
+                = path.pop().unwrap();
+
             let next_leaf = unsafe {
                 next_leaf_guard
                     .deref_unsafe()
@@ -384,13 +468,7 @@ impl<const FAN_OUT: usize,
                     continue
                 },
                 Some(next_weaver_node) if next_weaver_node.is_some() => {
-                    *current_weaver_node.k_ridgy.get_mut() = next_weaver_node.clone();
-                    match current_weaver_node.next.as_ref() {
-                        Some(prev_version_current_weaver_node) => {
-                            *prev_version_current_weaver_node.k_ridgy.get_mut() = next_weaver_node;
-                        },
-                        _ => { }
-                    }
+                    *current_next_weaver_node.k_ridgy.get_mut() = next_weaver_node.clone();
                     break node_visits
                 }
                 _ => break node_visits
