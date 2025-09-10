@@ -354,7 +354,7 @@ impl<const FAN_OUT: usize,
                         {
                             _ if !leaf_guard.is_valid() => continue,
                             Some(weaver_node) => {
-                                let mut last_key = None;
+                                let mut last_key = weaver_node.key;
                                 VWeaverKeyRidgyIterator::from(weaver_node)
                                     .take_while(|node|
                                         interval.contains(node.key))
@@ -364,15 +364,11 @@ impl<const FAN_OUT: usize,
                                         node.key,
                                         node.payload.as_ref().clone().unwrap()))
                                     .for_each(|node| {
-                                        last_key = Some(node.key); // for fence clearing
+                                        last_key = node.key; // for fence clearing
                                         result.push(node);
                                     });
 
-                                match last_key {
-                                    None => interval.lower = (self.inc_key)(leaf_fence.upper),
-                                    Some(last_key) =>
-                                        interval.lower = (self.inc_key)(last_key)
-                                }
+                                interval.lower = (self.inc_key)(last_key)
                             },
                             _ => interval.lower = (self.inc_key)(leaf_fence.upper)
                         }
