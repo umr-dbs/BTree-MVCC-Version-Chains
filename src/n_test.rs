@@ -1044,15 +1044,31 @@ fn experiment(
     (IndexHandler::Left(manager), handles)
 }
 
-pub fn format_insertions(i: usize) -> String {
-    if i % 1_000_000_000 == 0 {
-        format!("{} B", i as f64 / 1_000_000_000_f64)
-    } else if i % 1_000_000 == 0 {
-        format!("{} Mio", i as f64 / 1_000_000_f64)
-    } else if i % 1_000 == 0 {
-        format!("{} K", i as f64 / 1_000_f64)
+pub fn format_insertions(mut i: usize) -> String {
+    let mut parts = Vec::new();
+
+    let units = [
+        (1_000_000_000, "B"),
+        (1_000_000, "Mio"),
+        (1_000, "K"),
+    ];
+
+    for &(value, suffix) in &units {
+        if i >= value {
+            let count = i / value;
+            parts.push(format!("{} {}", count, suffix));
+            i %= value;
+        }
+    }
+
+    if i > 0 {
+        parts.push(i.to_string());
+    }
+
+    if parts.is_empty() {
+        "0".to_string()
     } else {
-        i.to_string()
+        parts.join(" + ")
     }
 }
 

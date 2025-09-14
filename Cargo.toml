@@ -36,5 +36,5 @@ serde_json = { version = "1.0.143" }
 crossbeam-channel = "0.5.15"
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2.175"
-sysinfo = "0.36.0"
+sysinfo = "0.37.0"
 raw-cpuid = "11.5.0"
