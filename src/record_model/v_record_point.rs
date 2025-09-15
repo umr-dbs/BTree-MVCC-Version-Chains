@@ -13,7 +13,7 @@ pub enum VersionIndexType {
     VWEAVER,
     VANILLA,
     SkipList,
-    // SkipListSynced,
+    FrugalSkipList,
     BTree
 }
 
@@ -54,7 +54,7 @@ impl Display for VersionIndexType {
         match self {
             VersionIndexType::VANILLA => write!(f, "VANILLA"),
             VersionIndexType::SkipList => write!(f, "SkipList"),
-            // VersionIndexType::SkipListSynced => write!(f, "SkipListSynced"),
+            VersionIndexType::FrugalSkipList => write!(f, "FrugalSkipList"),
             VersionIndexType::BTree => write!(f, "BTree"),
             VersionIndexType::VWEAVER => write!(f, "vWeaver"),
         }

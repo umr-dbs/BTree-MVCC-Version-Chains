@@ -413,11 +413,11 @@ pub fn execute_experiments() {
             let init_target_tx = experiment.total_tx;
             let mut total_running_time = 0u128;
             let v_index_prefix = match experiment.v_index_type {
-                VersionIndexType::VANILLA => "ll",
-                VersionIndexType::SkipList => "sk",
-                // VersionIndexType::SkipListSynced => "sk_synced",
-                VersionIndexType::BTree => "btree",
-                VersionIndexType::VWEAVER => "vweaver"
+                VersionIndexType::VANILLA => "btree_ll",
+                VersionIndexType::SkipList => "btree_sk",
+                VersionIndexType::FrugalSkipList => "btree_fg",
+                VersionIndexType::BTree => "btree_btree",
+                VersionIndexType::VWEAVER => "btree_vweaver"
             };
             if experiment.olap_workers > 0 {
                 if let Either::Right((protocol, v_index_kind)) = experiment.index_handler() {

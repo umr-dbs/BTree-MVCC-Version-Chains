@@ -29,7 +29,7 @@ mod n_test;
 mod version_index;
 
 fn main() {
-    make_splash();
+    // make_splash();
     let args = env::args();
     let parms = args.collect_vec();
     if parms.len() > 1  {
@@ -43,10 +43,12 @@ fn main() {
                 let v_type = match parms[7].as_str() {
                     "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
                     "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+                    "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
                     "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
                     "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
                 };
 
+                println!("v_index = {v_type}");
                 let tree = Arc::new(new_INDEX(OLC, v_type));
                 let mut check = HashMap::new();
                 let mut errors = 0;
@@ -102,6 +104,7 @@ fn main() {
                 let v_type = match v_index.as_str() {
                     "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
                     "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+                    "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
                     "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
                     "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
                 };

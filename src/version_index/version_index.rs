@@ -10,12 +10,12 @@ use CCBPlusTree::record_model::record_point::RecordPoint;
 use CCBPlusTree::test::{dec_key, inc_key};
 use CCBPlusTree::tree::bplus_tree::BPlusTree;
 use crossbeam_skiplist::SkipMap;
-use parking_lot::RwLock;
 use crate::n_test::NUM_RECORDS;
 use crate::record_model::v_record_point::{RecordInfo, VersionIndexType};
 use crate::version_index::vanilla::AtomicVersionList;
 use crate::record_model::Version;
 use crate::utils::safe_cell::SafeCell;
+use crate::version_index::frugal::AtomicFrugalList;
 use crate::version_index::v_weaver::{AtomicVWeaverList, WeaverNodeLink};
 
 pub const BTREE_V_INDEX_FAN_OUT: usize = NUM_RECORDS / 3;
@@ -56,10 +56,10 @@ pub enum VersionIndex<
     Key: Hash + Ord + Copy + Default, 
     Payload: Clone + Display + Default + Send + Sync + 'static> 
 {
+    FrugalSkipList(AtomicFrugalList<Payload>),
     VWEAVER(AtomicVWeaverList<Key, Payload>),
     VANILLA(AtomicVersionList<Payload>),
     SkipList(Arc<SkipListImpl<Payload>>),
-    // SkipListSynced(Arc<RwLock<SkipListImpl<Payload>>>),
     DexaBTree(ArcSwap<DexaBTree<Payload>>),
 }
 
@@ -71,8 +71,8 @@ impl<Key: Hash + Ord + Copy + Default,
                 VersionIndex::VANILLA(version_list.clone()),
             VersionIndex::SkipList(skip_list) =>
                 VersionIndex::SkipList(skip_list.clone()),
-            // VersionIndex::SkipListSynced(rw_skip_list) =>
-            //     VersionIndex::SkipListSynced(rw_skip_list.clone()),
+            VersionIndex::FrugalSkipList(fg) =>
+                VersionIndex::FrugalSkipList(fg.clone()),
             VersionIndex::DexaBTree(tree) =>
                 VersionIndex::DexaBTree(ArcSwap::new(tree.load_full())),
             VersionIndex::VWEAVER(weaver) =>
@@ -89,8 +89,8 @@ impl<Key: Hash + Ord + Copy + Default,
                 version_list.len(),
             VersionIndex::SkipList(skip_list) =>
                 skip_list.len(),
-            // VersionIndex::SkipListSynced(rw_skip_list) =>
-            //     rw_skip_list.read().len(),
+            VersionIndex::FrugalSkipList(fg) =>
+                fg.len(),
             VersionIndex::DexaBTree(tree) =>
                 2usize.pow(tree.load().height() as _) - 1,
             VersionIndex::VWEAVER(weaver) =>
@@ -100,14 +100,13 @@ impl<Key: Hash + Ord + Copy + Default,
     #[inline]
     pub fn new(key: Key, kind: VersionIndexType, payload: Payload, version: Version) -> Self {
         match kind {
+            VersionIndexType::FrugalSkipList =>
+                Self::FrugalSkipList(AtomicFrugalList::new(payload, version)),
             VersionIndexType::VANILLA =>
                 Self::VANILLA(AtomicVersionList::new(payload, version, None)),
             VersionIndexType::SkipList =>
                 Self::SkipList(Arc::new(
                     SkipMap::from_iter([(version, SafeCell::new(RecordInfo::new(payload)))]))),
-            // VersionIndexType::SkipListSynced =>
-            //     Self::SkipListSynced(Arc::new(RwLock::new(
-            //         SkipMap::from_iter([(version, SafeCell::new(RecordInfo::new(payload)))])))),
             VersionIndexType::BTree => new_btree().into(),
             VersionIndexType::VWEAVER =>
                 Self::VWEAVER(AtomicVWeaverList::new(key, payload, version))
@@ -158,23 +157,6 @@ impl<Key: Hash + Ord + Copy + Default,
                        }
                    ).unwrap_or_default()
             },
-            // VersionIndex::SkipListSynced(skip_list) =>
-            //     skip_list
-            //         .read()
-            //         .range(..=version)
-            //         .rev()
-            //         .next()
-            //         .map(|entry|
-            //             if version >= *entry.key() &&
-            //                 entry.value().del_version.get().map(|del| del > version)
-            //                     .unwrap_or(true)
-            //             {
-            //                 Some(RecordPoint::new(*entry.key(), entry.value().payload.clone()))
-            //             }
-            //             else {
-            //                 None
-            //             }
-            //         ).unwrap_or_default(),
             VersionIndex::DexaBTree(tree) =>
                 match tree.load().dispatch(CRUDOperation::Point(version)).1 {
                     CRUDOperationResult::MatchedRecord(record) =>
@@ -182,6 +164,12 @@ impl<Key: Hash + Ord + Copy + Default,
                             RecordPoint::new(record.key, record.payload.payload.clone())),
                     _ => unreachable!()
                 },
+            VersionIndex::FrugalSkipList(fg) => fg
+                .find(version)
+                .map(|frugal_node|
+                    RecordPoint::new(
+                        frugal_node.insert_version,
+                        frugal_node.payload.as_ref().clone().unwrap())),
             VersionIndex::VWEAVER(weaver) => weaver
                 .find(version)
                 .map(|weaver_node|
@@ -194,6 +182,8 @@ impl<Key: Hash + Ord + Copy + Default,
     #[inline]
     pub fn push(&self, insert_version: Version, payload: Payload) {
         match self {
+            VersionIndex::FrugalSkipList(fg) => fg
+                .push(Some(payload), insert_version),
             VersionIndex::VANILLA(version_list) => version_list
                 .push(insert_version, payload),
             VersionIndex::SkipList(skip_list) => {
@@ -207,18 +197,6 @@ impl<Key: Hash + Ord + Copy + Default,
                 let _
                     = skip_list.insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
             }
-            // VersionIndex::SkipListSynced(rw_skip_list) => {
-            //     let skip_list = rw_skip_list.write();
-            //     let old = skip_list
-            //         .back()
-            //         .unwrap();
-            //
-            //     if old.value().del_version.get().is_none() {
-            //         old.value().get_mut().del_version = insert_version.into();
-            //     }
-            //     let _
-            //         = skip_list.insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
-            // }
             VersionIndex::DexaBTree(tree) => {
                 let tree
                     = tree.load();
@@ -258,6 +236,8 @@ impl<Key: Hash + Ord + Copy + Default,
     #[inline]
     pub fn append(&self, insert_version: Version, payload: Payload) -> Payload {
         match self {
+            VersionIndex::FrugalSkipList(fg) => fg
+                .append(Some(payload), insert_version).unwrap(),
             VersionIndex::VANILLA(version_list) => version_list
                 .append(insert_version, payload),
             VersionIndex::SkipList(skip_list) => {
@@ -273,20 +253,6 @@ impl<Key: Hash + Ord + Copy + Default,
 
                 old.value().payload.clone()
             }
-            // VersionIndex::SkipListSynced(rw_skip_list) => {
-            //     let skip_list = rw_skip_list.write();
-            //     let old = skip_list
-            //         .back()
-            //         .unwrap();
-            //
-            //     if old.value().del_version.get().is_none() {
-            //         old.value().get_mut().del_version = insert_version.into();
-            //     }
-            //     let _
-            //         = skip_list.insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
-            //
-            //     old.value().payload.clone()
-            // }
             VersionIndex::DexaBTree(tree) => {
                 let tree
                     = tree.load();
@@ -325,6 +291,8 @@ impl<Key: Hash + Ord + Copy + Default,
     #[inline]
     pub fn delete(&self, del_version: Version) -> Option<Payload> {
         match self {
+            VersionIndex::FrugalSkipList(fg) => fg
+                .delete(del_version),
             VersionIndex::VANILLA(version_list) => version_list
                 .delete(del_version),
             VersionIndex::SkipList(skip_list) => {
@@ -346,26 +314,6 @@ impl<Key: Hash + Ord + Copy + Default,
                     None
                 }
             }
-            // VersionIndex::SkipListSynced(rw_skip_list) => {
-            //     let skip_list = rw_skip_list.write();
-            //     let current
-            //         = skip_list.back().unwrap();
-            //
-            //     if *current.key() < del_version && !current
-            //         .value()
-            //         .del_version
-            //         .get()
-            //         .map(|_| true)
-            //         .unwrap_or(false)
-            //     {
-            //         current.value().get_mut().del_version
-            //             = del_version.into();
-            //
-            //         Some(current.value().payload.clone())
-            //     } else {
-            //         None
-            //     }
-            // }
             VersionIndex::DexaBTree(tree) => {
                 let tree
                     = tree.load();
@@ -403,8 +351,8 @@ impl<Key: Hash + Ord + Copy + Default,
                 version_list.is_live(),
             VersionIndex::SkipList(skip_list) =>
                 skip_list.back().unwrap().value().del_version.get().is_none(),
-            // VersionIndex::SkipListSynced(skip_list) =>
-            //     skip_list.read().back().unwrap().value().del_version.get().is_none(),
+            VersionIndex::FrugalSkipList(fg) =>
+                fg.is_live(),
             VersionIndex::DexaBTree(tree) =>
                 match tree.load().dispatch(CRUDOperation::PeekMax).1
             {
@@ -420,12 +368,12 @@ impl<Key: Hash + Ord + Copy + Default,
     #[inline(always)]
     pub fn newest_payload(&self) -> Payload {
         match self {
+            VersionIndex::FrugalSkipList(fg) =>
+                fg.newest_payload(),
             VersionIndex::VANILLA(version_list) =>
                 version_list.newest_payload(),
             VersionIndex::SkipList(skip_list) =>
                 skip_list.back().unwrap().value().payload.clone(),
-            // VersionIndex::SkipListSynced(skip_list) =>
-            //     skip_list.read().back().unwrap().value().payload.clone(),
             VersionIndex::DexaBTree(tree) =>
                 match tree.load().dispatch(CRUDOperation::PeekMax).1
                 {
