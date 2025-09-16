@@ -179,7 +179,7 @@ fn olap_tests(index: Arc<BTree>,
 
     let mut olaps = vec![];
 
-    let _nc = fs::remove_file(format!("{v_index}_olap_skew_{skew}.csv"));
+    let _nc = fs::remove_file(format!("btree_{v_index}_olap_skew_{skew}.csv"));
     let mut olap_file = fs::OpenOptions::new()
         .append(true)
         .create(true)
