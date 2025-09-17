@@ -28,6 +28,16 @@ impl VersionIndexType {
         }
     }
 
+    #[inline(always)]
+    pub const fn is_frugal(&self) -> bool {
+        if let VersionIndexType::FrugalSkipList = self {
+            true
+        }
+        else {
+            false
+        }
+    }
+
     // #[inline(always)]
     // pub const fn is_skiplist_synced(&self) -> bool {
     //     if let VersionIndexType::SkipListSynced = self {

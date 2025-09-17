@@ -26,6 +26,9 @@ impl<const FAN_OUT: usize,
         let is_weaver
             = self.v_index_type.is_v_weaver();
 
+        let is_frugal
+            = self.v_index_type.is_frugal();
+
         match crud_operation {
             CRUDOperation::Delete(key) => {
                 let (node_visits, guard) = if olc {
@@ -207,6 +210,17 @@ impl<const FAN_OUT: usize,
                     = self.weaver_scan_dispatch(interval, version);
 
                 (node_visits, matches.into())
+            }
+            CRUDOperation::Range(interval, version) if is_frugal => {
+                let mut path
+                        = Vec::with_capacity(self.root.height() as _);
+
+                let node_visits = self.next_leaf_page(
+                    path.as_mut(),
+                    0,
+                    interval.lower);
+
+                self.range_query_olc(path.as_mut(), interval, version, node_visits)
             }
             // CRUDOperation::Range(key_interval, version) => {
             //     let mut path
