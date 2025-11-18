@@ -1,11 +1,12 @@
-use std::{env, fs, mem};
+use std::{env, fs, mem, thread};
 use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
-use std::io::{BufReader, Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Arc;
 use std::thread::spawn;
-use std::time::SystemTime;
+use std::time::{Instant, SystemTime};
 use chrono::{DateTime, Local};
+use crossbeam_channel::{unbounded, Receiver, TryRecvError};
 use itertools::Itertools;
 use rand::prelude::SliceRandom;
 use crate::block::block::Block;
@@ -13,9 +14,10 @@ use crate::crud_model::crud_api::CRUDDispatcher;
 use crate::crud_model::crud_operation::CRUDOperation;
 use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::locking::locking_strategy::LockingStrategy::*;
-use crate::n_test::{format_insertions, hle, Key, Payload, Sampler, DEBUG, FAN_OUT, NUM_RECORDS};
+use crate::n_test::{format_insertions, hle, Key, Payload, Sampler, DEBUG, FAN_OUT, INDEX, NUM_RECORDS};
 use crate::record_model::v_record_point::VersionIndexType;
 use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
+use crate::utils::crud_rate_limiter::{ThreadWorker, ThreadWorkerInfo};
 
 mod block;
 mod crud_model;
@@ -34,6 +36,81 @@ fn main() {
     let parms = args.collect_vec();
     if parms.len() > 1  {
         match parms[1].as_str() {
+            "insert_rate_limiter" => {
+                let log                = parms[2].parse::<bool>().unwrap_or(false);
+                let runtime_sec        = parms[3].parse::<u64>().unwrap_or(10);
+                let num_workers        = parms[4].parse::<usize>().unwrap_or(10);
+                let fps               = parms[5].parse::<usize>().unwrap_or(100);
+                let crud                    = CRUDOperation::InsertRand;
+                let olap_workers      = parms[6].parse::<usize>().unwrap_or(10);
+                let olaps_per_worker  = parms[7].parse::<usize>().unwrap_or(10);
+                let olap_skew_workers   = parms[8].parse::<f32>().unwrap_or(0f32);
+                let olaps_key_range    = parms[9].parse::<Key>().unwrap_or(Key::MAX);
+                let olaps_si_freshest  = parms[10].parse::<bool>().unwrap_or(false);
+
+                let v_type = match parms[7].as_str() {
+                    "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+                    "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+                    "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
+                    "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
+                    "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+                };
+
+                let index = Arc::new(new_INDEX(OLC, v_type));
+
+                let (info_sender, info_receiver)
+                    = unbounded();
+
+                let file_name
+                    = format!("btree_runtime_{runtime_sec}_workers_{num_workers}_fps_{fps}_crud_{crud}.csv");
+
+                let _ = fs::remove_file(file_name.as_str());
+                let mut log_file = BufWriter::new(OpenOptions::new()
+                    .write(true)
+                    .append(true)
+                    .create(true)
+                    .open(file_name.as_str()).unwrap());
+
+                log_file.write_all(b"tid,crud,fps,load,tick_ops,total_ops\n").unwrap();
+
+                let start_time       = Instant::now();
+                let workers = (0..num_workers)
+                    .map(|_| ThreadWorker::new(
+                        index.clone(),
+                        fps,
+                        crud.clone(),
+                        log,
+                        info_sender.clone()))
+                    .collect_vec();
+
+                let signal = info_receiver.clone();
+                spawn(move || olap_tests(
+                    index,
+                    olap_workers,
+                    olaps_per_worker,
+                    olap_skew_workers,
+                    olaps_key_range,
+                    olaps_si_freshest,
+                    Some(signal)));
+
+                while start_time.elapsed().as_secs() < runtime_sec {
+                    match info_receiver.try_recv() {
+                        Ok(info) =>
+                            log_file.write_all(format!("{}\n", info).as_bytes()).unwrap(),
+                        _ => thread::yield_now()
+                    }
+                }
+
+                println!("Total Ops = {}", workers
+                    .into_iter()
+                    .map(|t| t.stop())
+                    .collect_vec()
+                    .into_iter()
+                    .map(|handle| handle.join().unwrap())
+                    .sum::<usize>());
+
+                mem::drop(info_receiver);
+            }
             "test" => {
                 let n = parms[2].parse().unwrap();
                 let num_olaps = parms[3].parse().unwrap();
@@ -86,7 +163,7 @@ fn main() {
 
                 mem::drop(check);
 
-                olap_tests(tree, num_olaps, olaps_per_worker, skew, key_range)
+                olap_tests(tree, num_olaps, olaps_per_worker, skew, key_range, false, None)
             }
             "generate" => {
                 let query_file_name= parms[2].as_str();
@@ -97,6 +174,44 @@ fn main() {
                 let block_deletes: usize = parms[7].parse().unwrap();
 
                 println!("Generate only supported in MVTree!")
+            }
+            "load_cc" => {
+                let query_file_name= parms[2].to_string();
+                let v_index = parms[3].as_str().to_lowercase();
+                let num_olaps = parms[3].parse().unwrap();
+                let workers_per_thread = parms[4].parse().unwrap();
+                let skew = parms[5].parse().unwrap();
+                let range = parms[6].parse().unwrap_or(Key::MAX);
+
+                let v_type = match v_index.as_str() {
+                    "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+                    "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+                    "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
+                    "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
+                    "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+                };
+                let index
+                    = Arc::new(new_INDEX(OLC, v_type));
+
+                println!("Created BTree with version index = '{v_type}..");
+
+                let index_c = index.clone();
+                let (olap_signal, olap_sink)
+                    = unbounded();
+
+                let query_file_name_clone = query_file_name.clone();
+                let num = spawn(move ||
+                    load_query(query_file_name_clone.as_str(), index_c));
+
+                let olaps = spawn(move || olap_tests(
+                    index, num_olaps, workers_per_thread, skew, range, false, Some(olap_sink)));
+
+                let num = num.join().unwrap();
+                mem::drop(olap_signal);
+
+                olaps.join().unwrap();
+
+                println!("Finished executing {} CRUD operations from {query_file_name}", format_insertions(num));
             }
             "load" => {
                 let query_file_name= parms[2].as_str();
@@ -123,7 +238,7 @@ fn main() {
 
                 println!("Finished executing {} CRUD operations from {query_file_name},\
                  starting OLAP testings...", format_insertions(num));
-                olap_tests(index, num_olaps, workers_per_thread, skew, range);
+                olap_tests(index, num_olaps, workers_per_thread, skew, range, false, None);
             }
             // s => println!("unknown command '{s}'-")
             "help" | _ => {
@@ -171,7 +286,9 @@ fn olap_tests(index: Arc<BTree>,
               num_olaps: usize,
               workers_per_thread: usize,
               skew: f32,
-              range: u64)
+              range: u64,
+              fixed_si: bool,
+              control_signal: Option<Receiver<ThreadWorkerInfo>>)
 {
     println!("Starting OLAPs...");
     let v_index = index.v_index_type;
@@ -200,7 +317,12 @@ fn olap_tests(index: Arc<BTree>,
         .unwrap();
 
     for _ in 0..num_olaps {
-        let index = index.clone();
+        let index
+            = index.clone();
+
+        let signal
+            = control_signal.clone();
+
         olaps.push(spawn(move || {
             let mut results = vec![];
             for _ in 1..workers_per_thread {
@@ -222,9 +344,12 @@ fn olap_tests(index: Arc<BTree>,
                 let current_si
                     = index.committed_version();
 
-                let si
-                    = rand::random_range(1..=current_si);
-                // println!("Min = {key_min}, max = {key_max}");
+                let si = if fixed_si  {
+                    current_si
+                }
+                else {
+                    rand::random_range(1..=current_si)
+                };
 
                 let time_start
                     = SystemTime::now();
@@ -240,8 +365,14 @@ fn olap_tests(index: Arc<BTree>,
                     _ => panic!()
                 };
                 results.push(
-                    (si, current_si, 0u128, key_min, key_max, count_results, time_spent)
-                )
+                    (si, current_si, 0u128, key_min, key_max, count_results, time_spent));
+
+                if let Some(signal) = signal.as_ref() {
+                    match signal.try_recv() {
+                        Err(TryRecvError::Disconnected) => break,
+                        _ => { }
+                    }
+                }
             }
             results
         }))

@@ -463,6 +463,15 @@ impl<const FAN_OUT: usize,
                 }
             }
             CRUDOperation::Empty => (NodeVisits::MIN, CRUDOperationResult::Error),
+            CRUDOperation::UpdateRand => {
+                unimplemented!()
+            }
+            CRUDOperation::DeleteRand => {
+                unimplemented!()
+            }
+            CRUDOperation::InsertRand => {
+                unimplemented!()
+            }
         }
     }
 }

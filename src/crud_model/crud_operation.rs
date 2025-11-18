@@ -24,6 +24,11 @@ pub enum CRUDOperation<Key: Ord + Copy + Hash, Payload: Clone> {
     PopMax,
     Range(Interval<Key>, Version),
     RangeSi(Interval<Key>),
+
+    // Rand Writers
+    UpdateRand,
+    DeleteRand,
+    InsertRand
 }
 
 /// Explicitly support move-semantics for Transaction.
@@ -56,6 +61,12 @@ impl<Key: Display + Ord + Copy + Hash, Payload: Display + Clone> Display for CRU
                 write!(f, "PointSi(Key: {}, version: LIVE)", key),
             CRUDOperation::RangeSi(key) =>
                 write!(f, "Range(Keys: [{}, {}], version: LIVE)", key.lower(), key.upper()),
+            CRUDOperation::UpdateRand =>
+                write!(f, "UpdateRand"),
+            CRUDOperation::DeleteRand =>
+                write!(f, "DeleteRand"),
+            CRUDOperation::InsertRand =>
+                write!(f, "InsertRand"),
         }
     }
 }
