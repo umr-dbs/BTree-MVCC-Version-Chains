@@ -26,8 +26,8 @@ impl<const FAN_OUT: usize,
         let is_weaver
             = self.v_index_type.is_v_weaver();
 
-        let is_frugal
-            = self.v_index_type.is_frugal();
+        // let is_frugal
+        //     = self.v_index_type.is_frugal();
 
         match crud_operation {
             CRUDOperation::Delete(key) => {
@@ -211,53 +211,53 @@ impl<const FAN_OUT: usize,
 
                 (node_visits, matches.into())
             }
-            CRUDOperation::Range(interval, version) if is_frugal => {
-                let mut path
-                        = Vec::with_capacity(self.root.height() as _);
-
-                let node_visits = self.next_leaf_page(
-                    path.as_mut(),
-                    0,
-                    interval.lower);
-
-                self.range_query_olc(path.as_mut(), interval, version, node_visits)
-            }
-            // CRUDOperation::Range(key_interval, version) => {
+            // CRUDOperation::Range(interval, version) if is_frugal => {
             //     let mut path
-            //         = Vec::with_capacity(self.root.height() as _);
+            //             = Vec::with_capacity(self.root.height() as _);
             //
-            //     let node_visits = self.next_leaf_page(path.as_mut(),
-            //                                           0,
-            //                                           key_interval.lower);
+            //     let node_visits = self.next_leaf_page(
+            //         path.as_mut(),
+            //         0,
+            //         interval.lower);
             //
-            //     self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
+            //     self.range_query_olc(path.as_mut(), interval, version, node_visits)
             // }
-            CRUDOperation::Range(interval, version) => {
-                let (node_visits, guards)
-                    = self.traversal_read_range(&interval);
+            CRUDOperation::Range(key_interval, version) => {
+                let mut path
+                    = Vec::with_capacity(self.root.height() as _);
 
-                (node_visits,
-                 guards.into_iter()
-                     .flat_map(|(_block, guard)| guard
-                         .deref()
-                         .unwrap()
-                         .as_ref()
-                         .as_records()
-                         .iter()
-                         .skip_while(|record| !interval.contains(record.key))
-                         .filter_map(|record| {
-                             if let Some(v_e) = record.find(version) {
-                                 Some((record.key(), v_e.payload.clone()))
-                             } else {
-                                 None
-                             }
-                         })
-                         .take_while(|(key, ..)| interval.contains(*key))
-                         .map(|(key, v_payload)| RecordPoint::new(key, v_payload.clone()))
-                         .collect::<Vec<_>>())
-                     .collect::<Vec<_>>()
-                     .into())
+                let node_visits = self.next_leaf_page(path.as_mut(),
+                                                      0,
+                                                      key_interval.lower);
+
+                self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
             }
+            // CRUDOperation::Range(interval, version) => {
+            //     let (node_visits, guards)
+            //         = self.traversal_read_range(&interval);
+            //
+            //     (node_visits,
+            //      guards.into_iter()
+            //          .flat_map(|(_block, guard)| guard
+            //              .deref()
+            //              .unwrap()
+            //              .as_ref()
+            //              .as_records()
+            //              .iter()
+            //              .skip_while(|record| !interval.contains(record.key))
+            //              .filter_map(|record| {
+            //                  if let Some(v_e) = record.find(version) {
+            //                      Some((record.key(), v_e.payload.clone()))
+            //                  } else {
+            //                      None
+            //                  }
+            //              })
+            //              .take_while(|(key, ..)| interval.contains(*key))
+            //              .map(|(key, v_payload)| RecordPoint::new(key, v_payload.clone()))
+            //              .collect::<Vec<_>>())
+            //          .collect::<Vec<_>>()
+            //          .into())
+            // }
             CRUDOperation::PeekMin if olc => match self.traversal_read_olc(self.min_key) {
                 (node_visits, leaf_guard) => unsafe {
                     let leaf_page = leaf_guard

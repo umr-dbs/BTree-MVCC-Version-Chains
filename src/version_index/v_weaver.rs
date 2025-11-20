@@ -1,7 +1,9 @@
 use std::cell::Cell;
 use std::fmt::Display;
 use std::hash::Hash;
-use std::sync::Arc;
+use std::sync::{atomic, Arc};
+use std::sync::atomic::fence;
+use std::sync::atomic::Ordering::Release;
 use arc_swap::ArcSwap;
 use CCBPlusTree::record_model::record_point::RecordPoint;
 use crate::block::block::BlockGuard;
@@ -436,7 +438,7 @@ impl<const FAN_OUT: usize,
 
         let mut path = Vec::with_capacity(self.height() as _);
         let mut parent_index = 0;
-        loop {
+        'mainL: loop {
             node_visits
                 += self.next_leaf_page(path.as_mut(), parent_index, (self.inc_key)(from_key));
 
@@ -446,25 +448,45 @@ impl<const FAN_OUT: usize,
             let (_leaf_fence, next_leaf_guard)
                 = path.pop().unwrap();
 
-            let next_leaf = unsafe {
-                next_leaf_guard
-                    .deref_unsafe()
-                    .unwrap()
+            let next_leaf = {
+                let next_leaf_guard = next_leaf_guard
+                    .deref();
+
+                if let None = next_leaf_guard {
+                    continue 'mainL;
+                }
+                else {
+                    next_leaf_guard.unwrap()
+                }
             };
 
-            match next_leaf
-                .as_records()
-                .iter()
-                .find_map(|r|
-                    (r.key() > from_key).then(|| r.find_weaver_node_or_tombstone(from_version)))
-            {
+            let neighbour_r = 'neighbour_iterL: loop {
+                let records = next_leaf
+                    .as_records();
+
+                for r in records.iter() {
+                    if r.key > from_key && next_leaf_guard.is_valid() {
+                        break 'neighbour_iterL r.find_weaver_node_or_tombstone(from_version)
+                    }
+                    else if !next_leaf_guard.is_valid() {
+                        attempts += 1;
+                        sched_yield(attempts);
+                        continue 'mainL
+                    }
+                }
+
+                break None
+            };
+
+            match neighbour_r {
                 _ if !next_leaf_guard.is_valid() => { // valid validates only key-movers, not append-ops
                     attempts += 1;
                     sched_yield(attempts);
                     continue
                 },
-                Some(next_weaver_node) if next_weaver_node.is_some() => {
-                    *current_next_weaver_node.k_ridgy.get_mut() = next_weaver_node.clone();
+                Some(next_weaver_node)  => {
+                    *current_next_weaver_node.k_ridgy.get_mut() = Some(next_weaver_node.clone());
+                    fence(Release);
                     break node_visits
                 }
                 _ => break node_visits

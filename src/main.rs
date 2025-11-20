@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::thread::spawn;
 use std::time::{Instant, SystemTime};
 use chrono::{DateTime, Local};
-use crossbeam_channel::{unbounded, Receiver, TryRecvError};
-use itertools::Itertools;
+use crossbeam_channel::{unbounded, Receiver, Sender, TryRecvError};
+use itertools::{Either, Itertools};
 use rand::prelude::SliceRandom;
 use crate::block::block::Block;
 use crate::crud_model::crud_api::CRUDDispatcher;
@@ -89,7 +89,7 @@ fn main() {
                     olap_workers,
                     olaps_per_worker,
                     olap_skew_workers,
-                    olaps_key_range,
+                    Either::Left(olaps_key_range),
                     olaps_si_freshest,
                     Some(signal)));
 
@@ -163,7 +163,12 @@ fn main() {
 
                 mem::drop(check);
 
-                olap_tests(tree, num_olaps, olaps_per_worker, skew, key_range, false, None)
+                olap_tests(tree, num_olaps,
+                           olaps_per_worker,
+                           skew,
+                           Either::Left(key_range),
+                           false,
+                           None)
             }
             "generate" => {
                 let query_file_name= parms[2].as_str();
@@ -178,10 +183,10 @@ fn main() {
             "load_cc" => {
                 let query_file_name= parms[2].to_string();
                 let v_index = parms[3].as_str().to_lowercase();
-                let num_olaps = parms[3].parse().unwrap();
-                let workers_per_thread = parms[4].parse().unwrap();
-                let skew = parms[5].parse().unwrap();
-                let range = parms[6].parse().unwrap_or(Key::MAX);
+                let num_olaps = parms[4].parse().unwrap();
+                let workers_per_thread = parms[5].parse().unwrap();
+                let skew = parms[6].parse().unwrap();
+                let range = parms[7].parse().unwrap_or(Key::MAX);
 
                 let v_type = match v_index.as_str() {
                     "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
@@ -201,10 +206,57 @@ fn main() {
 
                 let query_file_name_clone = query_file_name.clone();
                 let num = spawn(move ||
-                    load_query(query_file_name_clone.as_str(), index_c));
+                    load_query(query_file_name_clone.as_str(), index_c, None));
 
                 let olaps = spawn(move || olap_tests(
-                    index, num_olaps, workers_per_thread, skew, range, false, Some(olap_sink)));
+                    index, num_olaps, workers_per_thread, skew, Either::Left(range), false, Some(olap_sink)));
+
+                let num = num.join().unwrap();
+                mem::drop(olap_signal);
+
+                olaps.join().unwrap();
+
+                println!("Finished executing {} CRUD operations from {query_file_name}", format_insertions(num));
+            }
+            "load_cc_new" => {
+                let query_file_name= parms[2].to_string();
+                let v_index = parms[3].as_str().to_lowercase();
+                let num_olaps = parms[4].parse().unwrap();
+                let workers_per_thread = parms[5].parse().unwrap();
+                let skew = parms[6].parse().unwrap();
+
+                let v_type = match v_index.as_str() {
+                    "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+                    "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+                    "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
+                    "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
+                    "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+                };
+                let index
+                    = Arc::new(new_INDEX(OLC, v_type));
+
+                println!("Created BTree with version index = '{v_type}..");
+
+                let (loader_signal,
+                    loader_sink)
+                    = unbounded();
+
+                let index_c = index.clone();
+                let (olap_signal, olap_sink)
+                    = unbounded();
+
+                let query_file_name_clone = query_file_name.clone();
+                let num = spawn(move ||
+                    load_query(query_file_name_clone.as_str(), index_c, Some(loader_signal)));
+
+                let olaps = spawn(move || olap_tests(
+                    index,
+                    num_olaps,
+                    workers_per_thread,
+                    skew,
+                    Either::Right(loader_sink),
+                    false,
+                    Some(olap_sink)));
 
                 let num = num.join().unwrap();
                 mem::drop(olap_signal);
@@ -234,11 +286,17 @@ fn main() {
 
                 println!("Created BTree with version index = '{v_type}..");
 
-                let num = load_query(query_file_name, index.clone());
+                let num = load_query(query_file_name, index.clone(), None);
 
                 println!("Finished executing {} CRUD operations from {query_file_name},\
                  starting OLAP testings...", format_insertions(num));
-                olap_tests(index, num_olaps, workers_per_thread, skew, range, false, None);
+                olap_tests(index,
+                           num_olaps,
+                           workers_per_thread,
+                           skew,
+                           Either::Left(range),
+                           false,
+                           None);
             }
             // s => println!("unknown command '{s}'-")
             "help" | _ => {
@@ -286,7 +344,7 @@ fn olap_tests(index: Arc<BTree>,
               num_olaps: usize,
               workers_per_thread: usize,
               skew: f32,
-              range: u64,
+              range: Either<Key, Receiver<CRUDOperationResult<Key, Payload>>>,
               fixed_si: bool,
               control_signal: Option<Receiver<ThreadWorkerInfo>>)
 {
@@ -301,7 +359,7 @@ fn olap_tests(index: Arc<BTree>,
         .append(true)
         .create(true)
         .write(true)
-        .open(format!("{v_index}_olap_skew_{skew}.csv"))
+        .open(format!("btree_{v_index}_olap_skew_{skew}.csv"))
         .unwrap();
 
     olap_file
@@ -323,22 +381,35 @@ fn olap_tests(index: Arc<BTree>,
         let signal
             = control_signal.clone();
 
+        let range
+            = range.clone();
+
         olaps.push(spawn(move || {
             let mut results = vec![];
             for _ in 1..workers_per_thread {
-                let mut key_min
-                    = rand::random_range(0..Key::MAX);
+                let mut key_max = 1000;
+                let mut key_min= Key::MIN;
+                if let Either::Left(range) = range {
+                    key_min = rand::random_range(0..range);
+                    key_max = key_min.checked_add(1000).unwrap_or(Key::MAX);
 
-                let mut key_max
-                    = key_min.checked_add(range).unwrap_or(Key::MAX);
-
-                if range == Key::MAX {
-                    key_min = 0;
-                    key_max = Key::MAX;
+                    if range == Key::MAX {
+                        key_min = 0;
+                        key_max = Key::MAX;
+                    }
+                    else if key_max >= Key::MAX {
+                        key_max = key_min;
+                        key_min -= range;
+                    }
                 }
-                else if key_max >= Key::MAX {
-                    key_max = key_min;
-                    key_min -= range;
+                else if let Either::Right(ref range) = range {
+                    match range.try_recv() {
+                        Ok(CRUDOperationResult::Inserted(key, _v)) => {
+                            key_max = key;
+                            key_min = key_max.checked_sub(1000).unwrap_or(0);
+                        }
+                        _ => {}
+                    }
                 }
 
                 let current_si
@@ -408,7 +479,10 @@ const INSERT: u8 = 0;
 const UPDATE: u8 = 1;
 const DELETE: u8 = 2;
 
-fn load_query(query_file: &str, index: Arc<BTree>) -> usize {
+fn load_query(query_file: &str,
+              index: Arc<BTree>,
+              report_signal: Option<Sender<CRUDOperationResult<Key, Payload>>>) -> usize
+{
     let mut query_file = BufReader::new(OpenOptions::new()
         .read(true)
         .open(format!("{query_file}"))
@@ -426,7 +500,15 @@ fn load_query(query_file: &str, index: Arc<BTree>) -> usize {
                         payload
                     );
 
-                    let _exe = index.dispatch(crud);
+                    let (_nv, exe) = index.dispatch(crud);
+                    if let CRUDOperationResult::Inserted(..) = exe {
+                        if let Some(ref sender) = report_signal {
+                            sender.send(exe).unwrap();
+                        }
+                    }
+                    else {
+                        panic!("Insert failed");
+                    }
                 }
                 UPDATE => {
                     let crud = CRUDOperation::Update(
@@ -434,13 +516,29 @@ fn load_query(query_file: &str, index: Arc<BTree>) -> usize {
                         payload
                     );
 
-                    let _exe = index.dispatch(crud);
+                    let (_nv, exe) = index.dispatch(crud);
+                    if let CRUDOperationResult::Updated(..) = exe {
+                        if let Some(ref sender) = report_signal {
+                            sender.send(exe).unwrap();
+                        }
+                    }
+                    else {
+                        panic!("Update failed");
+                    }
                 }
                 DELETE => {
                     let crud = CRUDOperation::Delete(
                         Key::from_le_bytes(buff[1..].try_into().unwrap()));
 
-                    let _exe = index.dispatch(crud);
+                    let (_nv, exe) = index.dispatch(crud);
+                    if let CRUDOperationResult::Deleted(..) = exe {
+                        if let Some(ref sender) = report_signal {
+                            sender.send(exe).unwrap();
+                        }
+                    }
+                    else {
+                        panic!("Delete failed");
+                    }
                 }
                 _ => panic!("Unknown CRUD Operation for blocks in load query!"),
             }
@@ -570,12 +668,12 @@ fn bernhard_tests() {
         let index = Arc::new(btree);
         let mut olaps = vec![];
 
-        let _nc = fs::remove_file(format!("{V_INDEX}_olap_skew_{skew}.csv"));
+        let _nc = fs::remove_file(format!("btree_{V_INDEX}_olap_skew_{skew}.csv"));
         let mut olap_file = fs::OpenOptions::new()
             .append(true)
             .create(true)
             .write(true)
-            .open(format!("{V_INDEX}_olap_skew_{skew}.csv"))
+            .open(format!("btree_{V_INDEX}_olap_skew_{skew}.csv"))
             .unwrap();
 
         olap_file
