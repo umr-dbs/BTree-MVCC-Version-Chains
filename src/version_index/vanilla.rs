@@ -105,12 +105,13 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionLi
 
     #[inline]
     pub fn push(&self, insert_version: Version, payload: Payload) {
-        unsafe {
-            self.insert_entry(
-                insert_version,
-                Version::MAX,
-                payload);
-        }
+        self.append(insert_version, payload);
+        // unsafe {
+        //     self.insert_entry(
+        //         insert_version,
+        //         Version::MAX,
+        //         payload);
+        // }
     }
 
     #[inline]

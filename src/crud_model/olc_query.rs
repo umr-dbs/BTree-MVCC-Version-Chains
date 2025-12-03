@@ -88,23 +88,24 @@ impl<const FAN_OUT: usize,
 
             if !local_results.is_empty() {
                 all_results.extend(local_results);
+            }
 
-                let (leaf_space, ..)
-                    = path.last().unwrap();
+            let (leaf_space, ..)
+                = path.last().unwrap();
 
-                key_interval.set_lower((self.inc_key)(leaf_space.upper()));
-
-                if key_interval.lower > key_interval.upper {
-                    break;
-                }
-
-                node_visits += self.next_leaf_page(
-                    path,
-                    path.len() - 2,
-                    key_interval.lower());
-            } else {
+            if leaf_space.upper() == self.max_key {
                 break;
             }
+
+            key_interval.set_lower((self.inc_key)(leaf_space.upper()));
+            if key_interval.lower > key_interval.upper {
+                break;
+            }
+
+            node_visits += self.next_leaf_page(
+                path,
+                path.len() - 2,
+                key_interval.lower());
         }
 
         (node_visits, CRUDOperationResult::MatchedRecords(all_results))

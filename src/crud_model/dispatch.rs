@@ -9,7 +9,8 @@ use crate::crud_model::crud_operation_result::CRUDOperationResult;
 use crate::tree::bplus_tree::BPlusTree;
 
 const DEBUG_VERIFY: bool = false;
-const WEAVER_RANGE_SCAN_ENABLED: bool = true; // TODO: Impl k_ridgy
+const WEAVER_RANGE_SCAN_ENABLED: bool = true;
+const LAZY_RANGE_SCAN_ENABLED: bool = true;
 
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
@@ -222,7 +223,8 @@ impl<const FAN_OUT: usize,
             //
             //     self.range_query_olc(path.as_mut(), interval, version, node_visits)
             // }
-            CRUDOperation::Range(key_interval, version) => {
+            CRUDOperation::Range(key_interval, version)
+            if LAZY_RANGE_SCAN_ENABLED => {
                 let mut path
                     = Vec::with_capacity(self.root.height() as _);
 
@@ -232,32 +234,32 @@ impl<const FAN_OUT: usize,
 
                 self.range_query_olc(path.as_mut(), key_interval, version, node_visits)
             }
-            // CRUDOperation::Range(interval, version) => {
-            //     let (node_visits, guards)
-            //         = self.traversal_read_range(&interval);
-            //
-            //     (node_visits,
-            //      guards.into_iter()
-            //          .flat_map(|(_block, guard)| guard
-            //              .deref()
-            //              .unwrap()
-            //              .as_ref()
-            //              .as_records()
-            //              .iter()
-            //              .skip_while(|record| !interval.contains(record.key))
-            //              .filter_map(|record| {
-            //                  if let Some(v_e) = record.find(version) {
-            //                      Some((record.key(), v_e.payload.clone()))
-            //                  } else {
-            //                      None
-            //                  }
-            //              })
-            //              .take_while(|(key, ..)| interval.contains(*key))
-            //              .map(|(key, v_payload)| RecordPoint::new(key, v_payload.clone()))
-            //              .collect::<Vec<_>>())
-            //          .collect::<Vec<_>>()
-            //          .into())
-            // }
+            CRUDOperation::Range(interval, version) => {
+                let (node_visits, guards)
+                    = self.traversal_read_range(&interval);
+
+                (node_visits,
+                 guards.into_iter()
+                     .flat_map(|(_block, guard)| guard
+                         .deref()
+                         .unwrap()
+                         .as_ref()
+                         .as_records()
+                         .iter()
+                         .skip_while(|record| !interval.contains(record.key))
+                         .filter_map(|record| {
+                             if let Some(v_e) = record.find(version) {
+                                 Some((record.key(), v_e.payload.clone()))
+                             } else {
+                                 None
+                             }
+                         })
+                         .take_while(|(key, ..)| interval.contains(*key))
+                         .map(|(key, v_payload)| RecordPoint::new(key, v_payload.clone()))
+                         .collect::<Vec<_>>())
+                     .collect::<Vec<_>>()
+                     .into())
+            }
             CRUDOperation::PeekMin if olc => match self.traversal_read_olc(self.min_key) {
                 (node_visits, leaf_guard) => unsafe {
                     let leaf_page = leaf_guard

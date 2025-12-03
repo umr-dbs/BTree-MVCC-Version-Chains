@@ -3,6 +3,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs::OpenOptions;
 use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::{Acquire, Release};
 use std::thread::spawn;
 use std::time::{Instant, SystemTime};
 use chrono::{DateTime, Local};
@@ -237,25 +239,24 @@ fn main() {
 
                 println!("Created BTree with version index = '{v_type}..");
 
-                let (loader_signal,
-                    loader_sink)
-                    = unbounded();
+                let atomic_key = Arc::new(AtomicU64::new(0));
 
                 let index_c = index.clone();
                 let (olap_signal, olap_sink)
                     = unbounded();
 
                 let query_file_name_clone = query_file_name.clone();
+                let atomic_key_clone = atomic_key.clone();
                 let num = spawn(move ||
-                    load_query(query_file_name_clone.as_str(), index_c, Some(loader_signal)));
+                    load_query(query_file_name_clone.as_str(), index_c, Some(atomic_key_clone)));
 
                 let olaps = spawn(move || olap_tests(
                     index,
                     num_olaps,
                     workers_per_thread,
                     skew,
-                    Either::Right(loader_sink),
-                    false,
+                    Either::Right(atomic_key),
+                    true,
                     Some(olap_sink)));
 
                 let num = num.join().unwrap();
@@ -267,7 +268,13 @@ fn main() {
             }
             "load" => {
                 let query_file_name= parms[2].as_str();
-                let v_index = parms[3].as_str().to_lowercase();
+
+                let num_olaps = parms[3].parse().unwrap();
+                let workers_per_thread = parms[4].parse().unwrap();
+                let skew = parms[5].parse().unwrap();
+                let range = parms[6].parse().unwrap_or(Key::MAX);
+
+                let v_index = parms[7].as_str().to_lowercase();
                 let v_type = match v_index.as_str() {
                     "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
                     "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
@@ -275,11 +282,6 @@ fn main() {
                     "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
                     "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
                 };
-
-                let num_olaps = parms[4].parse().unwrap();
-                let workers_per_thread = parms[5].parse().unwrap();
-                let skew = parms[6].parse().unwrap();
-                let range = parms[7].parse().unwrap_or(Key::MAX);
 
                 let index
                     = Arc::new(new_INDEX(OLC, v_type));
@@ -344,7 +346,7 @@ fn olap_tests(index: Arc<BTree>,
               num_olaps: usize,
               workers_per_thread: usize,
               skew: f32,
-              range: Either<Key, Receiver<CRUDOperationResult<Key, Payload>>>,
+              range: Either<Key, Arc<AtomicU64>>,
               fixed_si: bool,
               control_signal: Option<Receiver<ThreadWorkerInfo>>)
 {
@@ -403,13 +405,8 @@ fn olap_tests(index: Arc<BTree>,
                     }
                 }
                 else if let Either::Right(ref range) = range {
-                    match range.try_recv() {
-                        Ok(CRUDOperationResult::Inserted(key, _v)) => {
-                            key_max = key;
-                            key_min = key_max.checked_sub(1000).unwrap_or(0);
-                        }
-                        _ => {}
-                    }
+                    key_max = range.load(Acquire);
+                    key_min = key_max.checked_sub(1000).unwrap_or(0);
                 }
 
                 let current_si
@@ -422,6 +419,7 @@ fn olap_tests(index: Arc<BTree>,
                     rand::random_range(1..=current_si)
                 };
 
+                // println!("{key_min} - {key_max}: SI = {si}");
                 let time_start
                     = SystemTime::now();
 
@@ -481,7 +479,7 @@ const DELETE: u8 = 2;
 
 fn load_query(query_file: &str,
               index: Arc<BTree>,
-              report_signal: Option<Sender<CRUDOperationResult<Key, Payload>>>) -> usize
+              report_signal: Option<Arc<AtomicU64>>) -> usize
 {
     let mut query_file = BufReader::new(OpenOptions::new()
         .read(true)
@@ -501,9 +499,9 @@ fn load_query(query_file: &str,
                     );
 
                     let (_nv, exe) = index.dispatch(crud);
-                    if let CRUDOperationResult::Inserted(..) = exe {
+                    if let CRUDOperationResult::Inserted(key, ..) = exe {
                         if let Some(ref sender) = report_signal {
-                            sender.send(exe).unwrap();
+                            sender.store(key, Release);
                         }
                     }
                     else {
@@ -517,9 +515,9 @@ fn load_query(query_file: &str,
                     );
 
                     let (_nv, exe) = index.dispatch(crud);
-                    if let CRUDOperationResult::Updated(..) = exe {
+                    if let CRUDOperationResult::Updated(key, ..) = exe {
                         if let Some(ref sender) = report_signal {
-                            sender.send(exe).unwrap();
+                            sender.store(key, Release);
                         }
                     }
                     else {
@@ -531,9 +529,9 @@ fn load_query(query_file: &str,
                         Key::from_le_bytes(buff[1..].try_into().unwrap()));
 
                     let (_nv, exe) = index.dispatch(crud);
-                    if let CRUDOperationResult::Deleted(..) = exe {
+                    if let CRUDOperationResult::Deleted(key, ..) = exe {
                         if let Some(ref sender) = report_signal {
-                            sender.send(exe).unwrap();
+                            sender.store(key, Release);
                         }
                     }
                     else {
