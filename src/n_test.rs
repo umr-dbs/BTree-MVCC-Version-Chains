@@ -1,909 +1,27 @@
-pub fn hle() -> &'static str {
-    if cfg!(feature = "hardware-lock-elision") {
-        if cfg!(any(target_arch = "x86", target_arch = "x86_64")) {
-            "ON    "
-        } else {
-            "NO HTL"
-        }
-    } else {
-        "OFF   "
-    }
-}
-
-pub type SnapShot = Version;
-pub type INDEX = BPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
-
-use crossbeam_channel::{bounded, Sender, TryRecvError};
-use itertools::{Either, Itertools};
-use rand::rngs::ThreadRng;
-use rand::Rng;
-use serde::{Deserialize, Serialize};
-use std::fmt::{Display, Formatter};
+use std::collections::HashMap;
+use std::{fs, mem, thread};
+use std::fmt::format;
 use std::fs::OpenOptions;
-use std::ops::Div;
-use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::atomic::Ordering::{Relaxed, SeqCst};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::sync::Arc;
-use std::{fs, thread};
-use std::io::Write;
-use std::thread::{spawn, JoinHandle};
-use std::time::{Duration, SystemTime};
-use rand::distr::{Alphanumeric, Uniform};
-use rand::prelude::StdRng;
-use rand_distr::Zipf;
-use rand_distr::Distribution;
-use crate::crud_model::crud_api::CRUDDispatcher;
-use crate::crud_model::crud_operation::CRUDOperation;
-use crate::crud_model::crud_operation_result::CRUDOperationResult;
-use crate::locking::locking_strategy::CRUDProtocol;
-use crate::page_model::node::Node;
-use crate::record_model::v_record_point::VersionIndexType;
-use crate::record_model::Version;
-use crate::tree::bplus_tree::{new_INDEX, BPlusTree};
-// use crate::utils::smart_cell::{force_read_success, unforce_read_success};
-
-const SYSTEM_STR: &str = "B+Tree";
-
-pub enum Sampler {
-    Uniform(Uniform<u64>, ThreadRng),
-    Zipf(Zipf<f64>, ThreadRng),
-}
-
-impl Sampler {
-    pub fn new(skew: f64, n: Key) -> Self {
-        if skew == 0_f64 {
-            Sampler::Uniform(Uniform::new(0, n).unwrap(), rand::rng())
-        }
-        else {
-            Sampler::Zipf(Zipf::new(n as f64, skew).unwrap(), rand::rng())
-        }
-    }
-    #[inline(always)]
-    pub fn sample(&mut self) -> Key {
-        match self {
-            Sampler::Uniform(dist, rng) =>
-                dist.sample(rng) as Key,
-            Sampler::Zipf(dist, rng) =>
-                dist.sample(rng) as Key,
-        }
-    }
-}
-
-impl Display for Sampler {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Sampler::Uniform(..) => write!(f, "Uniform"),
-            Sampler::Zipf(..) => write!(f, "Zipf"),
-        }
-    }
-}
-
-pub fn run_olaps(handler: IndexHandler, 
-                 number_workers: usize,
-                 number_olaps_per_worker: usize,
-                 n: usize,
-                 current_committed: Version
-) -> Vec<JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, CurrentVersionSI, SleepTime, ResultsCount)>>>
-{
-    let mut handles
-        = Vec::with_capacity(number_workers);
-
-    for i in 1..=number_workers as u64 {
-        handles.push(olap(i, handler.clone(), number_olaps_per_worker, n));
-    }
-
-    handles
-}
-
-type CurrentVersionSI = SnapShot;
-type RangeMax = Key;
-type OlapTime = u128;
-type SleepTime = u64;
-
-type ResultsCount = usize;
-
-const FIXED_RANGE_VAR_SI: bool              = false;
-const FIXED_RANGE_INTERVAL: u64             = 10_000;
-
-pub fn olap(olap_id: u64, index_handler: IndexHandler, number_olaps: usize, n: usize)
-    -> JoinHandle<Vec<(SnapShot, RangeMax, OlapTime, CurrentVersionSI, SleepTime, ResultsCount)>> {
-    let index = index_handler
-        .left()
-        .expect("OLAP Init. failed! Provide an initialized TxManager!");
-
-    spawn(move || {
-        let uni_form
-            = Uniform::new(0_usize, n).unwrap();
-        
-        let mut olap_res
-            = Vec::with_capacity(number_olaps);
-
-        let mut current_version
-            = index.committed_version();
-
-        let mut range_max = FIXED_RANGE_INTERVAL;
-        let mut sleep_time = 0;
-
-        let si_steps = current_version / number_olaps as u64;
-        let limit = if FIXED_RANGE_VAR_SI {
-            match current_version % number_olaps as u64 == 0 {
-                true => number_olaps as u64,
-                false => number_olaps as u64 + 1,
-            }
-        }
-        else {
-            number_olaps as u64 - 1
-        };
-
-        for olap_id in 0..=limit {
-            let mut si;
-
-            if FIXED_RANGE_VAR_SI {
-                si = si_steps * olap_id;
-            }
-            else {
-                si = index.committed_version();
-                // sleep_time = rand::random_range(1..=150);
-
-                // thread::sleep(Duration::from_millis(sleep_time));
-
-                current_version
-                    = index.committed_version();
-
-                si = rand::random_range(0..=si);
-
-                range_max
-                    = uni_form.sample(&mut rand::rng()) as RangeMax;
-            }
-
-            let time_start = SystemTime::now();
-            let (_nv, crud_res) = index.dispatch(CRUDOperation::Range(
-                (index.min_key..=range_max).into(),
-                si));
-
-            let time_spent = SystemTime::now().duration_since(time_start).unwrap().as_nanos();
-            let matched_results_count
-                = if let CRUDOperationResult::MatchedRecords(records) = crud_res {
-                records.len()
-            }
-            else {
-                unreachable!()
-            };
-
-            olap_res.push( 
-                (si, 
-                 range_max, 
-                 time_spent,
-                 current_version,
-                 sleep_time,
-                 matched_results_count)
-            );
-        }
-        
-        olap_res
-    })
-}
-
-const CONFIG_PARAMETERS: &'static str = "config.json";
-#[derive(Clone, Serialize, Deserialize)]
-pub enum ClockType {
-    FREE,
-    OPT,
-    SYNC,
-}
-
-impl Display for ClockType {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ClockType::FREE => write!(f, "FREE"),
-            ClockType::OPT => write!(f, "OPT"),
-            ClockType::SYNC => write!(f, "SYNC"),
-        }
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct GroupConfig {
-    olap_joint_workload: bool,
-    olap_workers: usize,
-    olaps_tx_per_worker: usize,
-    protocol: CRUDProtocol,
-    v_index_type: VersionIndexType,
-    clock: ClockType,
-    skew: f64,
-    skew_n: usize,
-    gc_enable: bool,
-    threads: usize,
-    total_tx: usize,
-    insert_ratio: usize,
-    update_ratio: usize,
-    delete_ratio: usize,
-    point_reads_ratio: usize,
-    range_reads_ratio: usize,
-    range_size: u64,
-    chain_groups: Vec<SubGroupConfig>,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-pub struct SubGroupConfig {
-    olap_joint_workload: bool,
-    olap_workers: usize,
-    olaps_tx_per_worker: usize,
-    skew: f64,
-    skew_n: usize,
-    gc_enable: bool,
-    threads: usize,
-    total_tx: usize,
-    insert_ratio: usize,
-    update_ratio: usize,
-    delete_ratio: usize,
-    point_reads_ratio: usize,
-    range_reads_ratio: usize,
-    range_size: u64,
-}
-
-impl GroupConfig {
-    fn is_valid(&self) -> bool {
-        100 == self.insert_ratio
-            + self.update_ratio
-            + self.delete_ratio
-            + self.point_reads_ratio
-            + self.range_reads_ratio
-            && self.threads > 1
-            && self.protocol.is_mono_writer()
-            && self.is_read_only()
-            || self.threads == 1 && self.protocol.is_mono_writer()
-            || !self.protocol.is_mono_writer()
-    }
-
-    fn index_handler(&self) -> IndexHandler {
-        Either::Right((self.protocol.clone(), self.v_index_type))
-    }
-
-    fn is_read_only(&self) -> bool {
-        self.insert_ratio == 0 && self.update_ratio == 0 && self.delete_ratio == 0
-    }
-
-    fn is_write_only(&self) -> bool {
-        self.point_reads_ratio == 0 && self.range_reads_ratio == 0
-    }
-
-    fn is_mix_read_write(&self) -> bool {
-        !self.is_read_only() && !self.is_write_only()
-    }
-
-    fn num_chains(&self) -> usize {
-        self.chain_groups.len()
-    }
-}
-
-impl Default for GroupConfig {
-    fn default() -> Self {
-        Self {
-            olap_joint_workload: false,
-            olap_workers: 0,
-            olaps_tx_per_worker: 0,
-            chain_groups: vec![],
-            protocol: Default::default(),
-            v_index_type: VersionIndexType::VANILLA,
-            clock: ClockType::FREE,
-            skew: 1f64,
-            skew_n: 10000,
-            gc_enable: false,
-            threads: 1,
-            total_tx: 10_000_000,
-            insert_ratio: 100,
-            update_ratio: 0,
-            delete_ratio: 0,
-            point_reads_ratio: 0,
-            range_reads_ratio: 0,
-            range_size: 0,
-        }
-    }
-}
-
-impl Display for GroupConfig {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{},{},{},{},{},{},{},{},{},{},{},{},{}",
-            self.protocol,
-            self.v_index_type,
-            "_",
-            self.skew,
-            self.skew_n,
-            "_",
-            self.threads,
-            self.insert_ratio,
-            self.update_ratio,
-            self.delete_ratio,
-            self.point_reads_ratio,
-            self.range_reads_ratio,
-            self.range_size,
-        )
-    }
-}
-
-impl Display for SubGroupConfig {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "{},{},{},{},{},{},{},{},{},{}",
-            self.skew,
-            self.skew_n,
-            "_",
-            self.threads,
-            self.insert_ratio,
-            self.update_ratio,
-            self.delete_ratio,
-            self.point_reads_ratio,
-            self.range_reads_ratio,
-            self.range_size,
-        )
-    }
-}
-
-type IndexHandler = Either<Arc<INDEX>, (CRUDProtocol, VersionIndexType)>;
-
-fn load_config_experiments() -> Vec<GroupConfig> {
-    match OpenOptions::new().read(true).open(CONFIG_PARAMETERS) {
-        Ok(file) => serde_json::from_reader(file).unwrap_or_else(|error| {
-            println!("JSON Error: {}", error);
-            println!("Using default ConfigParameters");
-            vec![GroupConfig::default()]
-        }),
-        Err(error) => {
-            println!("File Error: {}", error);
-            println!("Using default ConfigParameters");
-            vec![GroupConfig::default()]
-        }
-    }
-}
-
-pub fn execute_experiments() {
-    let groups
-        = load_config_experiments();
-
-    let total_exps = groups
-        .iter()
-        .fold(groups.len(), |acc, group| acc + group.num_chains());
-
-    println!("[Loaded] - Experiments loaded #{total_exps}");
-    println!("main_index,\
-    experiment_id,\
-    chain_id,\
-    tx_target,\
-    tx_executed,\
-    tx_success,\
-    tx_fail,\
-    time,\
-    protocol,\
-    version_index,\
-    clock,\
-    skew,\
-    skew_n,\
-    gc_enable,\
-    threads,\
-    insert_ratio,\
-    update_ratio,\
-    delete_ratio,\
-    point_reads_ratio,\
-    range_reads_ratio,\
-    range_size,\
-    log_height,\
-    actual_height,\
-    blocks_allocated,\
-    blocks_reused,\
-    olaps_total_time,\
-    olaps_workers,\
-    olaps_per_worker,\
-    olaps_avg_sleep_time,\
-    olaps_joint_workload,\
-    total_running_time");
-    groups
-        .into_iter()
-        .enumerate()
-        .for_each(|(experiment_id, experiment)| {
-            // unsafe {
-            //     unforce_read_success()
-            // }
-            
-            let mut olap_handle = None;
-            let mut index_handler = None;
-            let init_target_tx = experiment.total_tx;
-            let mut total_running_time = 0u128;
-            let v_index_prefix = match experiment.v_index_type {
-                VersionIndexType::VANILLA => "btree_ll",
-                VersionIndexType::SkipList => "btree_sk",
-                VersionIndexType::FrugalSkipList => "btree_fg",
-                VersionIndexType::BTree => "btree_btree",
-                VersionIndexType::VWEAVER => "btree_vweaver"
-            };
-            if experiment.olap_workers > 0 {
-                if let Either::Right((protocol, v_index_kind)) = experiment.index_handler() {
-                    print!("{SYSTEM_STR},{experiment_id},INIT,{init_target_tx}");
-                    index_handler = Some(Either::Left(Arc::new(new_INDEX(protocol, v_index_kind))));
-                    olap_handle = Some(run_olaps(index_handler.clone().unwrap(),
-                                                 experiment.olap_workers,
-                                                 experiment.olaps_tx_per_worker,
-                                                 init_target_tx, 0));
-                }
-            }
-            else {
-                print!("{SYSTEM_STR},{experiment_id},INIT,{init_target_tx}");
-            }
-
-            let terminate_workload = match olap_handle {
-                Some(..) => Some(Arc::new(AtomicBool::new(false))),
-                _ => None
-            };
-            let terminate_clone
-                = terminate_workload.clone();
-
-            let handler_clone
-                = index_handler.clone();
-
-            let exp_clone
-                = experiment.clone();
-
-            let mut start_time = SystemTime::now();
-            let sp_index_handler
-                = spawn(move || start_experiment_by_config(&exp_clone, handler_clone, terminate_clone));
-            
-            let mut total_olap_time = 0;
-            let mut avg_olap_sleep_time = 0;
-            if let Some(olap_handle) = olap_handle {
-                let olap_data_result = olap_handle
-                    .into_iter()
-                    .flat_map(|jh| jh.join().unwrap())
-                    .map(|t@(.., olap_time, olap_sleep_time, _)| {
-                        total_olap_time += olap_time;
-                        avg_olap_sleep_time += olap_sleep_time;
-                        t
-                    }).collect_vec();
-
-                terminate_workload.map(|shutdown| shutdown.store(true, SeqCst));
-                index_handler = Some(sp_index_handler.join().unwrap());
-                
-                total_running_time = SystemTime::now()
-                    .duration_since(start_time)
-                    .unwrap()
-                    .as_millis();
-               
-                total_olap_time /= 1_000_000;
-                avg_olap_sleep_time /= experiment.olap_workers as CurrentVersionSI;
-                avg_olap_sleep_time /= experiment.olaps_tx_per_worker as CurrentVersionSI;
-
-                let _nc = fs::remove_file(format!("{v_index_prefix}_olap_{experiment_id}_INIT.csv"));
-                let mut olap_file = fs::OpenOptions::new()
-                    .append(true)
-                    .create(true)
-                    .write(true)
-                    .open(format!("{v_index_prefix}_olap_{experiment_id}_INIT.csv"))
-                    .unwrap();
-
-                olap_file.write_all(b"target_snapshot,current_snapshot,sleep_time,range_end,count_results,latency\n").unwrap();
-                for (si, range_max, olap_latency, curr_si, sleep_time, count) in olap_data_result {
-                    olap_file.write_all(format!("\
-                                      {si},\
-                                      {curr_si},\
-                                      {sleep_time},\
-                                      {range_max},\
-                                      {count},\
-                                      {olap_latency}\n").as_bytes())
-                        .unwrap();
-                }
-            }
-            else {
-                terminate_workload.map(|shutdown| shutdown.store(true, SeqCst));
-                index_handler = Some(sp_index_handler.join().unwrap());
-                total_running_time = SystemTime::now()
-                    .duration_since(start_time)
-                    .unwrap()
-                    .as_millis();
-            }
-
-            let mut index_handler
-                = index_handler.unwrap();
-            
-            let (h, r) = height_root(&index_handler);
-            let (alloc, reuse) = block_alloc_reuses(&index_handler);
-            let (olap_w, olaps_per_w, olaps_joint_workload)
-                = (experiment.olap_workers, experiment.olaps_tx_per_worker, experiment.olap_joint_workload);
-
-            println!(",{experiment},{h},{r},{alloc},{reuse},\
-            {total_olap_time},{olap_w},{olaps_per_w},{avg_olap_sleep_time},{olaps_joint_workload},{total_running_time}");
-            experiment
-                .chain_groups
-                .into_iter()
-                .enumerate()
-                .for_each(|(num, inner_group)| {
-                    // unsafe {
-                    //     force_read_success()
-                    // }
-                    
-                    let subgroup = num + 1;
-                    let target_tx = inner_group.total_tx;
-                    let mut olap_handle = None;
-
-                    if inner_group.olap_workers > 0 {
-                        print!("{SYSTEM_STR},{experiment_id},{subgroup},{target_tx}");
-                        let si = index_handler.as_ref().left().unwrap().committed_version();
-                        olap_handle = Some(run_olaps(
-                            index_handler.clone(), inner_group.olap_workers,
-                            inner_group.olaps_tx_per_worker,
-                            init_target_tx, si));
-                    }
-                    else {
-                        print!("{SYSTEM_STR},{experiment_id},{subgroup},{target_tx}");
-                    }
-
-                    if let Either::Left(ref m_manager) = index_handler {
-                        m_manager.block_manager.reset_alloc_reuse_counts();
-                    }
-
-                    let terminate_workload = match olap_handle {
-                        Some(..) => Some(Arc::new(AtomicBool::new(false))),
-                        _ => None
-                    };
-                    let terminate_clone
-                        = terminate_workload.clone();
-
-                    let exp_clone
-                        = inner_group.clone();
-
-                    let handle_clone
-                        = index_handler.clone();
-                    
-                    start_time = SystemTime::now();
-                    let sp_index_handler
-                        = spawn(move || chain_experiment_by_config(&exp_clone, handle_clone, terminate_clone));
-                    
-                    let mut total_olap_time = 0;
-                    let mut avg_olap_sleep_time = 0;
-                    if let Some(olap_handle) = olap_handle {
-                        let olap_data_result = olap_handle
-                            .into_iter()
-                            .flat_map(|jh| jh.join().unwrap())
-                            .map(|t@(.., olap_time, olap_sleep_time, _)| {
-                                total_olap_time += olap_time;
-                                avg_olap_sleep_time += olap_sleep_time;
-                                t
-                            }).collect_vec();
-
-                        terminate_workload.map(|shutdown| shutdown.store(true, SeqCst));
-                        index_handler = sp_index_handler.join().unwrap();
-                        
-                        total_running_time
-                            = SystemTime::now().duration_since(start_time).unwrap().as_millis();
-
-                        total_olap_time /= 1_000_000;
-                        avg_olap_sleep_time /= inner_group.olap_workers as CurrentVersionSI;
-                        avg_olap_sleep_time /= inner_group.olaps_tx_per_worker as CurrentVersionSI;
-
-                        let _nc = fs::remove_file(format!("{v_index_prefix}_olap_{experiment_id}_{subgroup}.csv"));
-                        let mut olap_file = fs::OpenOptions::new()
-                            .append(true)
-                            .create(true)
-                            .write(true)
-                            .open(format!("{v_index_prefix}_olap_{experiment_id}_{subgroup}.csv"))
-                            .unwrap();
-
-                        olap_file.write_all(b"target_snapshot,current_snapshot,sleep_time,range_end,count_results,latency\n").unwrap();
-                        for (si, range_max, olap_latency, curr_si, sleep_time, count) in olap_data_result {
-                            olap_file.write_all(format!("\
-                            {si},\
-                            {curr_si},\
-                            {sleep_time},\
-                            {range_max},\
-                            {count},\
-                            {olap_latency}\n").as_bytes()).unwrap();
-                        }
-                    }
-                    else {
-                        terminate_workload.map(|shutdown| shutdown.store(true, SeqCst));
-                        index_handler = sp_index_handler.join().unwrap();
-                        total_running_time = SystemTime::now()
-                            .duration_since(start_time)
-                            .unwrap()
-                            .as_millis();
-                    }
-                    // drop(olap_handle.take());
-                    
-                    let (h, r) = height_root(&index_handler);
-                    let (alloc, reuse) = block_alloc_reuses(&index_handler);
-                    let (olap_w, olaps_per_w, olaps_joint_workload)
-                        = (inner_group.olap_workers, inner_group.olaps_tx_per_worker, inner_group.olap_joint_workload);
-
-
-                    println!(",{},{},{},{},{h},{r},{alloc},{reuse},\
-                    {total_olap_time},{olap_w},{olaps_per_w},{avg_olap_sleep_time},{olaps_joint_workload},{total_running_time}",
-                             experiment.protocol,
-                             experiment.v_index_type,
-                             experiment.clock,
-                             inner_group);
-                });
-        })
-}
-
-fn start_experiment_by_config(
-    config: &GroupConfig,
-    index_handler: Option<IndexHandler>,
-    terminate_workload: Option<Arc<AtomicBool>>) -> IndexHandler
-{
-    if terminate_workload.is_some() {
-        run_experiment_with_params_until(
-            config.threads,
-            index_handler.unwrap_or(config.index_handler()),
-            config.gc_enable,
-            config.skew,
-            config.skew_n,
-            config.insert_ratio,
-            config.update_ratio,
-            config.delete_ratio,
-            config.point_reads_ratio,
-            config.range_reads_ratio,
-            config.range_size,
-            terminate_workload.unwrap()
-        )
-    }
-    else {
-        run_experiment_with_params(
-            config.threads,
-            index_handler.unwrap_or(config.index_handler()),
-            config.gc_enable,
-            config.skew,
-            config.skew_n,
-            config.insert_ratio,
-            config.update_ratio,
-            config.delete_ratio,
-            config.point_reads_ratio,
-            config.range_reads_ratio,
-            config.range_size,
-            config.total_tx,
-        )
-    }
-}
-
-fn chain_experiment_by_config(
-    config: &SubGroupConfig,
-    index_handler: IndexHandler,
-    terminate_workload: Option<Arc<AtomicBool>>) -> IndexHandler
-{
-    if terminate_workload.is_some() {
-        run_experiment_with_params_until(
-            config.threads,
-            index_handler,
-            config.gc_enable,
-            config.skew,
-            config.skew_n,
-            config.insert_ratio,
-            config.update_ratio,
-            config.delete_ratio,
-            config.point_reads_ratio,
-            config.range_reads_ratio,
-            config.range_size,
-            terminate_workload.unwrap()
-        )
-    }
-    else {
-        run_experiment_with_params(
-            config.threads,
-            index_handler,
-            config.gc_enable,
-            config.skew,
-            config.skew_n,
-            config.insert_ratio,
-            config.update_ratio,
-            config.delete_ratio,
-            config.point_reads_ratio,
-            config.range_reads_ratio,
-            config.range_size,
-            config.total_tx,
-        )
-    }
-}
-
-
-fn run_experiment_with_params_until(
-    threads: usize,
-    index: IndexHandler,
-    gc_enable: bool,
-    skew: f64,
-    skew_n: usize,
-    insert_ratio: usize,
-    update_ratio: usize,
-    delete_ratio: usize,
-    point_reads_ratio: usize,
-    range_reads_ratio: usize,
-    range_size: u64,
-    terminate: Arc<AtomicBool>
-) -> IndexHandler {
-    let total_tx_counter
-        = Arc::new(AtomicUsize::new(0));
-
-    let (index_handler, handles) = experiment(
-        threads,
-        index,
-        gc_enable,
-        skew,
-        skew_n,
-        insert_ratio,
-        update_ratio,
-        delete_ratio,
-        point_reads_ratio,
-        range_reads_ratio,
-        range_size,
-        total_tx_counter.clone(),
-    );
-
-    while !terminate.load(SeqCst) {
-        thread::yield_now();
-    }
-
-    let bulk_killer = handles
-        .into_iter()
-        .map(|(handle, killer)| {
-            drop(killer);
-            handle
-        })
-        .collect_vec();
-
-    let result = bulk_killer
-        .into_iter()
-        .map(|handle| handle.join().unwrap())
-        .collect_vec();
-
-    let mut total_time = 0;
-    let mut total_success = 0;
-    let mut total_error = 0;
-    for (_index, (tx_success, tx_error, time)) in result.iter().enumerate() {
-        // println!("\t[tid_{index}]: tx_success = {tx_success}, tx_error = {tx_error}, time = {time}");
-        total_success += tx_success;
-        total_error += tx_error;
-        total_time = total_time.max(*time);
-    }
-
-    let total_executed_tx = total_success + total_error;
-
-    print!(",{total_executed_tx},{total_success},{total_error},{total_time}");
-    // println!("\t---------------------------------------------------------------------------------");
-    // println!("\t[Summary] - Tx Executed = {total_executed_tx}, Target Tx = {total_tx}, Total Time = {total_time}");
-    // println!("\t---------------------------------------------------------------------------------");
-
-    index_handler
-}
-
-
-fn run_experiment_with_params(
-    threads: usize,
-    index: IndexHandler,
-    gc_enable: bool,
-    skew: f64,
-    skew_n: usize,
-    insert_ratio: usize,
-    update_ratio: usize,
-    delete_ratio: usize,
-    point_reads_ratio: usize,
-    range_reads_ratio: usize,
-    range_size: u64,
-    limit_tx: usize,
-) -> IndexHandler {
-    let total_tx_counter
-        = Arc::new(AtomicUsize::new(0));
-
-    let (index_handler, handles) = experiment(
-        threads,
-        index,
-        gc_enable,
-        skew,
-        skew_n,
-        insert_ratio,
-        update_ratio,
-        delete_ratio,
-        point_reads_ratio,
-        range_reads_ratio,
-        range_size,
-        total_tx_counter.clone(),
-    );
-
-    while total_tx_counter.load(SeqCst) < limit_tx {
-        thread::yield_now();
-    }
-
-    let bulk_killer = handles
-        .into_iter()
-        .map(|(handle, killer)| {
-            drop(killer);
-            handle
-        })
-        .collect_vec();
-
-    let result = bulk_killer
-        .into_iter()
-        .map(|handle| handle.join().unwrap())
-        .collect_vec();
-
-    let mut total_time = 0;
-    let mut total_success = 0;
-    let mut total_error = 0;
-    for (_index, (tx_success, tx_error, time)) in result.iter().enumerate() {
-        // println!("\t[tid_{index}]: tx_success = {tx_success}, tx_error = {tx_error}, time = {time}");
-        total_success += tx_success;
-        total_error += tx_error;
-        total_time = total_time.max(*time);
-    }
-
-    let total_executed_tx = total_success + total_error;
-
-    print!(",{total_executed_tx},{total_success},{total_error},{total_time}");
-    // println!("\t---------------------------------------------------------------------------------");
-    // println!("\t[Summary] - Tx Executed = {total_executed_tx}, Target Tx = {total_tx}, Total Time = {total_time}");
-    // println!("\t---------------------------------------------------------------------------------");
-
-    index_handler
-}
-pub const DEBUG: bool = true;
-
-// pub const FAN_OUT: usize = 255;
-// pub const NUM_RECORDS: usize = 102;
-
-pub const FAN_OUT: usize = 255;
-pub const NUM_RECORDS: usize = 102;
-
-pub type Key = u64;
-// pub type Payload = PayloadIndirection;
-pub type Payload = u64;
-
-pub const PAYLOAD_STR_LEN_MIN: usize = 704;
-pub const PAYLOAD_STR_LEN_MAX: usize = 7078;
-pub const PAYLOAD_ATTR_STR_COUNT: usize = 67;
-
-fn rnd_str(len_min: usize, len_max: usize) -> String {
-    let len = rand::rng().random_range(len_min..=len_max);
-    rand::rng()
-        .sample_iter(&Alphanumeric)
-        .take(len)
-        .map(char::from)
-        .collect()
-}
-
-fn rnd_str_vec(items: usize, str_len_min: usize, str_len_max: usize) -> Vec<String> {
-    (0..items)
-        .map(|i| rnd_str(str_len_min, str_len_max))
-        .collect()
-}
-#[derive(Clone)]
-pub struct PayloadIndirection(Box<PayloadData>);
-
-#[derive(Clone)]
-pub struct PayloadData {
-    attributes: Vec<String>
-}
-
-impl PayloadData {
-    pub fn attr(&self, i: usize) -> &str {
-        self.attributes.get(i).unwrap()
-    }
-}
-
-impl Default for PayloadIndirection {
-    fn default() -> Self {
-        Self(Box::new(PayloadData {
-            attributes: rnd_str_vec(
-                PAYLOAD_ATTR_STR_COUNT,
-                PAYLOAD_STR_LEN_MIN,
-                PAYLOAD_STR_LEN_MAX),
-        }))
-    }
-}
-
-impl Display for PayloadIndirection {
-    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}", self.0.attributes.join(", "))
-    }
-}
-
+use std::sync::atomic::{AtomicU64, AtomicUsize};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
+use std::thread::{spawn, yield_now};
+use std::time::{Instant, SystemTime};
+use crossbeam_channel::{unbounded, Receiver, TryRecvError};
+use itertools::{Either, Itertools};
+
+use crate::mvb_crud_model::crud_api::CRUDDispatcher;
+use crate::mvb_crud_model::crud_operation::CRUDOperation;
+use crate::mvb_crud_model::crud_operation_result::CRUDOperationResult;
+use crate::mvb_crud_model::dispatch::LAZY_RANGE_SCAN_ENABLED;
+use crate::mvb_locking::locking_strategy::LockingStrategy::OLC;
+use crate::mvb_record_model::v_record_point::VersionIndexType;
+use crate::mvb_record_model::Version;
+use crate::mvb_tree::bplus_tree::{new_INDEX, MVBPlusTree};
+use crate::mvb_utils::crud_rate_limiter::{ThreadWorker, ThreadWorkerInfo};
+
+pub type MVBTree = MVBPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
 pub fn inc_key(k: Key) -> Key {
     k.checked_add(1).unwrap_or(Key::MAX)
 }
@@ -912,137 +30,580 @@ pub fn dec_key(k: Key) -> Key {
     k.checked_sub(1).unwrap_or(Key::MIN)
 }
 
-fn experiment(
-    num_threads: usize,
-    index_handler: IndexHandler,
-    gc_enable: bool,
-    skew: f64,
-    skew_n: usize,
-    insert_ratio: usize,
-    update_ratio: usize,
-    delete_ratio: usize,
-    points_reads_ratio: usize,
-    range_reads_ratio: usize,
-    range_size: u64,
-    total_tx: Arc<AtomicUsize>,
-) -> (
-    IndexHandler,
-    Vec<(JoinHandle<(usize, usize, u128)>, Sender<()>)>,
-) {
-    debug_assert_eq!(
-        insert_ratio + update_ratio + delete_ratio + points_reads_ratio + range_reads_ratio,
-        100,
-        "Ratios must add to 100%"
-    );
+pub(crate) fn main_load(parms: Vec<String>) {
+    {
+        println!("###### Command: {} ######", parms.iter().skip(1).join(" "));
 
-    #[inline(always)]
-    fn gen_key(i: u64, range_start: u64, range_end: u64, lambda: f64, rnd: &mut StdRng) -> u64 {
-        #[inline(always)]
-        fn sample_next(lambda: f64, rnd: &mut StdRng) -> f64 {
-            let num = rnd.gen_range(0_f64..1_f64);
+        let query_file_name = parms[2].to_string();
+        let concurrent = parms[3].parse::<bool>().unwrap();
+        let num_olaps = parms[4].parse().unwrap();
 
-            (1_f64 - num).ln().div(-lambda)
+        let scans_per_thread = parms[5].parse().unwrap();
+
+        let skew = parms[6].parse().unwrap();
+        let range = parms[7].parse().unwrap_or(Key::MAX);
+        let v_index = match parms[8].as_str() {
+            "sk" => VersionIndexType::SkipList,
+            "ll" => VersionIndexType::VANILLA,
+            "fg" => VersionIndexType::FrugalSkipList,
+            "bt" => VersionIndexType::BTree,
+            "w"  => VersionIndexType::VWEAVER,
+            _ => VersionIndexType::default()
+        };
+        let index
+            = Arc::new(new_INDEX(OLC, v_index));
+
+        println!("- QueryFile = {query_file_name}\n\
+                - Concurrent = {concurrent}\n\
+                - OLAP Threads = {num_olaps} (Cores = {}, Threads = {})\n\
+                - Scans/Thread = {}\n\
+                - Skew = {skew}\n\
+                - Range = {range}\n\
+                - Version Index = {v_index}",
+                 num_cpus::get_physical(),
+                 num_cpus::get(),
+                 if concurrent { format!("Continuous\n- OLTP Threads = {scans_per_thread}") } else { format!("{scans_per_thread}") });
+
+        if concurrent {
+            let query_file_name_clone = query_file_name.clone();
+            let mut oltp = load_query_into_memory(
+                query_file_name_clone.as_str());
+
+            let oltp_threads = scans_per_thread;
+            let slice = oltp.len() / oltp_threads;
+
+            let work_oltp = (0..oltp_threads)
+                .map(|_| oltp.drain(..slice).collect_vec())
+                .collect_vec();
+
+            let oltp_joins = work_oltp
+                .into_iter()
+                .map(|work| {
+                    let index = index.clone();
+                    spawn(move || {
+                        let mut count_crud = 0;
+                        work.into_iter().for_each(|crud| {
+                            let _ = index.dispatch(crud);
+                            count_crud += 1;
+                        });
+                        count_crud
+                    })
+                }).collect_vec();
+
+            let (olap_signal, olap_sink)
+                = unbounded();
+
+            let olaps = spawn(move || olap_tests(
+                index,
+                num_olaps,
+                1,
+                skew,
+                Either::Left(range),
+                false,
+                Some(olap_sink)));
+
+            let oltp_executed = oltp_joins
+                .into_iter()
+                .map(|j| j.join().unwrap())
+                .sum::<usize>();
+
+            drop(olap_signal);
+            let num_scans_executed = olaps.join().unwrap();
+
+            println!("- Executed {} OLTPs from {query_file_name}\n\
+        - Executed = {} OLAPs", format_insertions(oltp_executed),
+                     format_insertions(num_scans_executed));
+
+            println!("###### End Command: {} ######", parms.iter().skip(1).join(" "));
+        } else {
+            let num = load_query(query_file_name.as_str(), index.clone(), None);
+
+            println!("- Executed {} CRUD operations from {query_file_name}, \
+                 starting OLAPs...", format_insertions(num));
+
+            let num_scans_executed = olap_tests(index,
+                                                num_olaps,
+                                                scans_per_thread,
+                                                skew,
+                                                Either::Left(range),
+                                                false,
+                                                None);
+
+            println!("- Executed = {} OLAPs", format_insertions(num_scans_executed));
+            println!("###### End Command: {} ######", parms.iter().skip(1).join(" "));
         }
-        let range = range_end - range_start;
-        (((loop {
-            let key = i as f64 * (1_f64 - sample_next(lambda, rnd));
-            if key >= 0_f64 {
-                break key;
-            }
-        }) / range as f64)
-            * u64::MAX as f64) as _
+    }
+}
+
+fn olap_tests(index: Arc<MVBTree>,
+              num_olaps: usize,
+              tx_per_thread: usize,
+              skew: f32,
+              range: Either<Key, Arc<AtomicU64>>,
+              fixed_si: bool,
+              control_signal: Option<Receiver<ThreadWorkerInfo>>) -> usize
+{
+    if control_signal.is_none() {
+        println!("> Starting OLAPs...{num_olaps} threads, \
+        {tx_per_thread} scans per thread.");
+    } else {
+        println!("> Starting OLAPs...{num_olaps} threads, \
+         with control signal for continuous scans per thread");
     }
 
-    let manager = match index_handler {
-        Either::Left(m_index) => m_index,
-        Either::Right((protocol, v_index_kind)) =>
-            Arc::new(new_INDEX(protocol, v_index_kind)),
-    };
+    if range.is_left() {
+        println!("> Scan key-range is fixed to 0..={}", range.as_ref().left().unwrap())
+    } else {
+        println!("> Scan key-range is dynamic to 0..=LastKey")
+    }
 
-    type WorkerSignal = ();
+    let v_index = index.v_index_type;
 
-    let is_nop = 
-        insert_ratio == 0 && 
-        delete_ratio == 0 &&
-        update_ratio == 0 &&
-        points_reads_ratio == 0 &&
-        range_reads_ratio == 0;
+    let lazy = if LAZY_RANGE_SCAN_ENABLED {
+        "_lazy"
+    } else { "" };
 
-    let handles = (0..num_threads)
-        .map(|_| {
-            let manager = manager.clone();
+    let mut olaps = vec![];
 
-            let (thread_killer, thread_control)
-                = bounded::<WorkerSignal>(0);
+    let file_log = format!("btree_{v_index}{lazy}_olap_skew_{skew}.csv");
+    let _nc = fs::remove_file(file_log.as_str());
+    let mut olap_file = fs::OpenOptions::new()
+        .append(true)
+        .create(true)
+        .write(true)
+        .open(file_log.as_str())
+        .unwrap();
 
-            let total_tx = total_tx.clone();
+    olap_file
+        .write_all(
+            b"target_snapshot,\
+            current_snapshot,\
+            sleep_time,\
+            range_start,\
+            range_end,\
+            count_results,\
+            latency\n",
+        )
+        .unwrap();
 
-            // tx_success, tx_error, time_spent
-            let handle = spawn(move || {
-                let mut sampler
-                    = Sampler::new(skew, skew_n as Key);
+    let g_counter = Arc::new(AtomicUsize::new(0));
 
-                let (mut tx_success, mut tx_error, start_execution_time) =
-                    (0usize, 0usize, SystemTime::now());
+    for _ in 0..num_olaps {
+        let index
+            = index.clone();
 
-                let random_number 
-                    = rand::rng().random_range(0..100);
+        let signal
+            = control_signal.clone();
 
-                let local_tx = move |key: Key| -> CRUDOperation<Key, Payload> {
-                    if random_number < insert_ratio {
-                        CRUDOperation::Insert(key, Payload::default())
-                    } else if random_number < insert_ratio + points_reads_ratio {
-                        CRUDOperation::PointSi(key)
-                    } else if random_number < insert_ratio + points_reads_ratio + range_reads_ratio
-                    {
-                        if u64::MAX - range_size <= key {
-                            CRUDOperation::RangeSi((key..=u64::MAX).into())
-                        } else {
-                           CRUDOperation::RangeSi((key..key + range_size).into())
-                        }
-                    } else if random_number
-                        < insert_ratio + points_reads_ratio + range_reads_ratio + delete_ratio
-                    {
-                        CRUDOperation::Delete(key)
-                    } else {
-                        CRUDOperation::Update(key, Payload::default())
-                    }
+        let range
+            = range.clone();
+
+        let count_olaps
+            = g_counter.clone();
+
+        olaps.push(spawn(move || {
+            let mut results = vec![];
+            let mut tx_c = 0;
+            while tx_c < tx_per_thread {
+                let mut key_max = 1000;
+                let mut key_min= Key::MIN;
+                if let Either::Left(range) = range {
+                    key_min = 0;
+                    key_max = range;
+                }
+                else if let Either::Right(ref range) = range {
+                    key_max = range.load(Acquire);
+                    key_min = key_max.checked_sub(1000).unwrap_or(0);
+                }
+
+                let mut current_si
+                    = index.current_version_for_reader();
+
+                while current_si == 1 {
+                    yield_now();
+                    current_si = index.current_version_for_reader(); // todo: check reader clock
+                }
+
+                let si = if fixed_si {
+                    current_si
+                } else {
+                    rand::random_range(1..=current_si)
                 };
 
-                loop {
-                    match thread_control.try_recv() {
+                // println!("{key_min} - {key_max}: SI = {si}");
+                let time_start
+                    = SystemTime::now();
+
+                let (_nv, crud) =
+                    index.dispatch(CRUDOperation::Range((key_min, key_max).into(), si));
+
+                let time_spent
+                    = SystemTime::now().duration_since(time_start).unwrap().as_nanos();
+
+                let count_results = match crud {
+                    CRUDOperationResult::MatchedRecords(data) =>  data.len(),
+                    _ => panic!()
+                };
+
+                let _ = count_olaps.fetch_add(1, Relaxed);
+
+                results.push(
+                    (si, current_si, 0u128, key_min, key_max, count_results, time_spent));
+
+                if let Some(signal) = signal.as_ref() {
+                    match signal.try_recv() {
                         Err(TryRecvError::Disconnected) => break,
-                        _ if is_nop => thread::sleep(Duration::from_millis(1)),
-                        _ => {
-                            let next
-                                = local_tx(sampler.sample());
-
-                            match manager.dispatch(next) {
-                                (_nv, CRUDOperationResult::Error) => tx_error += 1,
-                                (_nv, _) => tx_success += 1,
-                            }
-
-                            total_tx.fetch_add(1, Relaxed);
-                        }
+                        _ => continue
                     }
                 }
 
-                (
-                    tx_success,
-                    tx_error,
-                    SystemTime::now()
-                        .duration_since(start_execution_time)
-                        .unwrap()
-                        .as_millis(),
-                )
+                tx_c += 1;
+            }
+            results
+        }))
+    }
+
+    let olaps = olaps.into_iter().map(|j| j.join().unwrap())
+        .flatten()
+        .collect::<Vec<_>>();
+
+    // mem::drop(updaters);
+
+    olaps.into_iter()
+        .for_each(|(target_si,
+                       current_si,
+                       sleep_time,
+                       key_min,
+                       key_max,
+                       count_results,
+                       time_spent)|
+            {
+                olap_file.write_all(format!("\
+                            {target_si},\
+                            {current_si},\
+                            {sleep_time},\
+                            {key_min},\
+                            {key_max},\
+                            {count_results},\
+                            {time_spent}\n").as_bytes()).unwrap();
             });
 
-            (handle, thread_killer)
-        })
-        .collect_vec();
-
-    (IndexHandler::Left(manager), handles)
+    g_counter.load(SeqCst)
 }
+
+fn load_query(query_file: &str,
+              index: Arc<MVBTree>,
+              report_signal: Option<Arc<AtomicU64>>) -> usize
+{
+    let mut query_file = BufReader::new(OpenOptions::new()
+        .read(true)
+        .open(format!("{query_file}"))
+        .unwrap());
+
+    let mut query_count = 0;
+    let payload = Payload::default();
+    let mut buff = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+    loop {
+        match query_file.read_exact(buff.as_mut_slice()) {
+            Ok(..) => match buff[0] {
+                INSERT => {
+                    let crud = CRUDOperation::Insert(
+                        Key::from_le_bytes(buff[1..].try_into().unwrap()),
+                        payload
+                    );
+
+                    let (_nv, exe) = index.dispatch(crud);
+                    if let CRUDOperationResult::Inserted(key, ..) = exe {
+                        if let Some(ref sender) = report_signal {
+                            sender.store(key, Release);
+                        }
+                    }
+                    else {
+                        panic!("Insert failed");
+                    }
+                }
+                UPDATE => {
+                    let crud = CRUDOperation::Update(
+                        Key::from_le_bytes(buff[1..].try_into().unwrap()),
+                        payload
+                    );
+
+                    let (_nv, exe) = index.dispatch(crud);
+                    if let CRUDOperationResult::Updated(key, ..) = exe {
+                        if let Some(ref sender) = report_signal {
+                            sender.store(key, Release);
+                        }
+                    }
+                    else {
+                        panic!("Update failed");
+                    }
+                }
+                DELETE => {
+                    let crud = CRUDOperation::Delete(
+                        Key::from_le_bytes(buff[1..].try_into().unwrap()));
+
+                    let (_nv, exe) = index.dispatch(crud);
+                    if let CRUDOperationResult::Deleted(key, ..) = exe {
+                        if let Some(ref sender) = report_signal {
+                            sender.store(key, Release);
+                        }
+                    }
+                    else {
+                        panic!("Delete failed");
+                    }
+                }
+                _ => panic!("Unknown CRUD Operation for blocks in load query!"),
+            }
+            Err(..) => break
+        }
+
+        query_count += 1
+    }
+
+    assert!(query_file.read_exact([0].as_mut_slice()).is_err());
+    query_count
+}
+
+pub(crate) fn main_insert_rate_limiter(parms: Vec<String>) {
+    {
+        let log                = parms[2].parse::<bool>().unwrap_or(false);
+        let runtime_sec        = parms[3].parse::<u64>().unwrap_or(10);
+        let num_workers        = parms[4].parse::<usize>().unwrap_or(10);
+        let fps               = parms[5].parse::<usize>().unwrap_or(100);
+        let crud                    = CRUDOperation::InsertRand;
+        let olap_workers      = parms[6].parse::<usize>().unwrap_or(10);
+        let olaps_per_worker  = parms[7].parse::<usize>().unwrap_or(10);
+        let olap_skew_workers   = parms[8].parse::<f32>().unwrap_or(0f32);
+        let olaps_key_range    = parms[9].parse::<Key>().unwrap_or(Key::MAX);
+        let olaps_si_freshest  = parms[10].parse::<bool>().unwrap_or(false);
+
+        let v_type = match parms[7].as_str() {
+            "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+            "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+            "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
+            "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
+            "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+        };
+
+        let index = Arc::new(new_INDEX(OLC, v_type));
+
+        let (info_sender, info_receiver)
+            = unbounded();
+
+        let file_name
+            = format!("btree_runtime_{runtime_sec}_workers_{num_workers}_fps_{fps}_crud_{crud}.csv");
+
+        let _ = fs::remove_file(file_name.as_str());
+        let mut log_file = BufWriter::new(OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(file_name.as_str()).unwrap());
+
+        log_file.write_all(b"tid,crud,fps,load,tick_ops,total_ops\n").unwrap();
+
+        let start_time       = Instant::now();
+        let workers = (0..num_workers)
+            .map(|_| ThreadWorker::new(
+                index.clone(),
+                fps,
+                crud.clone(),
+                log,
+                info_sender.clone()))
+            .collect_vec();
+
+        let signal = info_receiver.clone();
+        spawn(move || olap_tests(
+            index,
+            olap_workers,
+            olaps_per_worker,
+            olap_skew_workers,
+            Either::Left(olaps_key_range),
+            olaps_si_freshest,
+            Some(signal)));
+
+        while start_time.elapsed().as_secs() < runtime_sec {
+            match info_receiver.try_recv() {
+                Ok(info) =>
+                    log_file.write_all(format!("{}\n", info).as_bytes()).unwrap(),
+                _ => thread::yield_now()
+            }
+        }
+
+        println!("Total Ops = {}", workers
+            .into_iter()
+            .map(|t| t.stop())
+            .collect_vec()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .sum::<usize>());
+
+        mem::drop(info_receiver);
+    }
+}
+pub(crate) fn main_test(parms: Vec<String>) {
+    {
+        let n = parms[2].parse().unwrap();
+        let num_olaps = parms[3].parse().unwrap();
+        let olaps_per_worker = parms[4].parse().unwrap();
+        let skew = parms[5].parse().unwrap();
+        let key_range = parms[6].parse().unwrap_or(Key::MAX);
+        let v_type = match parms[7].as_str() {
+            "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+            "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+            "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
+            "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
+            "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+        };
+
+        println!("v_index = {v_type}");
+        let tree = Arc::new(new_INDEX(OLC, v_type));
+        let mut check = HashMap::new();
+        let mut errors = 0;
+
+        while check.len() < n {
+            let key
+                = rand::random_range(0..Key::MAX);
+
+            if !check.contains_key(&key) {
+                match tree.dispatch(CRUDOperation::Insert(key, Payload::default())).1 {
+                    CRUDOperationResult::Inserted(_, v) => {
+                        check.insert(key, v);
+                    }
+                    _ => {
+                        println!("Error insert key={key}");
+                        errors += 1
+                    }
+                };
+
+            }
+        }
+
+        // for (k, v) in check.iter() {
+        //     match mvb_tree.dispatch(CRUDOperation::Point(*k, *v)).1 {
+        //         CRUDOperationResult::MatchedRecord(Some(..)) => {}
+        //         CRUDOperationResult::MatchedRecord(None) => {
+        //             println!("Empty result of point: key={k}, version={v}");
+        //         }
+        //         _ => {
+        //             println!("Error crud point: key={k}, version={v}");
+        //             errors += 1
+        //         }
+        //     }
+        // }
+
+        mem::drop(check);
+
+        olap_tests(tree, num_olaps,
+                   olaps_per_worker,
+                   skew,
+                   Either::Left(key_range),
+                   false,
+                   None);
+    }
+}
+pub(crate) fn main_load_cc_new(parms: Vec<String>) {
+    {
+        let query_file_name= parms[2].to_string();
+        let v_index = parms[3].as_str().to_lowercase();
+        let num_olaps = parms[4].parse().unwrap();
+        let workers_per_thread = parms[5].parse().unwrap();
+        let skew = parms[6].parse().unwrap();
+
+        let v_type = match v_index.as_str() {
+            "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+            "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+            "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
+            "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
+            "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+        };
+        let index
+            = Arc::new(new_INDEX(OLC, v_type));
+
+        println!("Created BTree with version index = '{v_type}..");
+
+        let atomic_key = Arc::new(AtomicU64::new(0));
+
+        let index_c = index.clone();
+        let (olap_signal, olap_sink)
+            = unbounded();
+
+        let query_file_name_clone = query_file_name.clone();
+        let atomic_key_clone = atomic_key.clone();
+        let num = spawn(move ||
+            load_query(query_file_name_clone.as_str(), index_c, Some(atomic_key_clone)));
+
+        let olaps = spawn(move || olap_tests(
+            index,
+            num_olaps,
+            workers_per_thread,
+            skew,
+            Either::Right(atomic_key),
+            true,
+            Some(olap_sink)));
+
+        let num = num.join().unwrap();
+        mem::drop(olap_signal);
+
+        olaps.join().unwrap();
+
+        println!("Finished executing {} CRUD operations from {query_file_name}", format_insertions(num));
+    }
+}
+const INSERT: u8 = 0;
+const UPDATE: u8 = 1;
+const DELETE: u8 = 2;
+fn load_query_into_memory(query_file: &str) -> Vec<CRUDOperation<Key, Payload>> {
+    let mut query_file = BufReader::new(OpenOptions::new()
+        .read(true)
+        .open(format!("{query_file}"))
+        .unwrap());
+
+    let payload = Payload::default();
+    let mut loaded = vec![];
+
+    loop {
+        let mut buff = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+        match query_file.read_exact(buff.as_mut_slice()) {
+            Ok(..) => match buff[0] {
+                INSERT => {
+                    let key = Key::from_le_bytes((&buff[1..]).try_into().unwrap());
+                    let crud = CRUDOperation::Insert(key, payload);
+                    loaded.push(crud);
+                }
+                UPDATE => {
+                    let crud = CRUDOperation::Update(
+                        Key::from_le_bytes(buff[1..].try_into().unwrap()), payload);
+
+                    loaded.push(crud);
+                }
+                DELETE => {
+                    let crud = CRUDOperation::Delete(
+                        Key::from_le_bytes(buff[1..].try_into().unwrap()));
+
+                    loaded.push(crud);
+                }
+                _ => panic!("Unknown CRUD Operation for blocks in load query into memory!"),
+            }
+            Err(..) => break
+        }
+    }
+
+    assert!(query_file.read_exact([0].as_mut_slice()).is_err());
+
+    loaded
+}
+
+pub const BSZ: usize = 4096;
+
+pub type Payload = u64;
+pub type Key = u64;
+
+pub type SnapShot = Version;
+pub const FAN_OUT: usize = 255; // was earlier 256
+pub const NUM_RECORDS: usize = 170;
+
+pub type INDEX = MVBPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
 
 pub fn format_insertions(mut i: usize) -> String {
     let mut parts = Vec::new();
@@ -1070,34 +631,4 @@ pub fn format_insertions(mut i: usize) -> String {
     } else {
         parts.join(" + ")
     }
-}
-
-fn block_alloc_reuses(index_handler: &IndexHandler) -> (usize, usize) {
-    if let Either::Left(index) = index_handler {
-        (index.block_manager.alloc_count.load(SeqCst), 0)
-    }
-    else {
-        unreachable!()
-    }
-}
-
-fn height_root(index_handler: &IndexHandler) -> (usize, usize) {
-    if let Either::Left(index) = index_handler {
-        let log_height = index.root.height() as usize;
-        let mut real_height = 1usize;
-
-        let mut curr_block = index.root.block().clone();
-        let mut curr_guard = curr_block.borrow_read();
-        loop {
-            match curr_guard.deref().unwrap().node_data {
-                Node::Index(ref page) => unsafe {
-                    curr_block = page.get_child_unsafe(0).clone();
-                    curr_guard = curr_block.borrow_read();
-                },
-                _ => return (log_height, real_height),
-            }
-            real_height += 1;
-        }
-    }
-    unreachable!()
 }

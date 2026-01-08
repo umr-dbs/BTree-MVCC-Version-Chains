@@ -1,12 +1,12 @@
-pub mod block;
-pub mod crud_model;
-pub mod locking;
-pub mod page_model;
-pub mod record_model;
-pub mod tree;
-pub mod utils;
+pub mod mvb_block;
+pub mod mvb_crud_model;
+pub mod mvb_locking;
+pub mod mvb_page_model;
+pub mod mvb_record_model;
+pub mod mvb_tree;
+pub mod mvb_utils;
 pub mod n_test;
-pub mod version_index;
+pub mod mvb_version_index;
 type BTreeApi = INDEX;
 
 #[allow(non_camel_case_types)]
@@ -44,21 +44,21 @@ impl Deref for BTreeApiExport {
 use std::ffi::{c_int, c_void, CString};
 use std::{mem, ptr};
 use std::ops::Deref;
-use crate::crud_model::crud_operation::CRUDOperation;
-use crate::crud_model::crud_operation_result::CRUDOperationResult;
-use crate::crud_model::crud_api::CRUDDispatcher;
-use crate::locking::locking_strategy::{hybrid_lock_attempts, LHL_read_write, LockingStrategy, orwc, orwc_attempts};
+use crate::mvb_crud_model::crud_operation::CRUDOperation;
+use crate::mvb_crud_model::crud_operation_result::CRUDOperationResult;
+use crate::mvb_crud_model::crud_api::CRUDDispatcher;
+use crate::mvb_locking::locking_strategy::{hybrid_lock_attempts, LHL_read_write, LockingStrategy, orwc, orwc_attempts};
 use crate::n_test::INDEX;
-use crate::record_model::v_record_point::VersionIndexType;
-use crate::record_model::v_record_point::VersionIndexType::VANILLA;
-use crate::tree::bplus_tree::new_INDEX;
-use crate::utils::interval::Interval;
+use crate::mvb_record_model::v_record_point::VersionIndexType;
+use crate::mvb_record_model::v_record_point::VersionIndexType::VANILLA;
+use crate::mvb_tree::bplus_tree::new_INDEX;
+use crate::mvb_utils::interval::Interval;
 
 impl BTreeApiExport {
     #[inline(always)]
     fn find(&self, key: *const u8, _sz: usize, value_out: *mut u8) -> bool {
         match self.dispatch(CRUDOperation::Point(
-            unsafe { ptr::read(mem::transmute(key)) }, self.committed_version()))
+            unsafe { ptr::read(mem::transmute(key)) }, self.current_version_for_reader()))
         {
             (.., CRUDOperationResult::MatchedRecord(Some(result)))
              => unsafe {
@@ -125,7 +125,7 @@ impl BTreeApiExport {
         let key_end = key_start + scan_sz as u64 - 1;
         let mut len = 0;
 
-        match self.dispatch(CRUDOperation::Range(Interval::new(key_start, key_end), self.committed_version())) {
+        match self.dispatch(CRUDOperation::Range(Interval::new(key_start, key_end), self.current_version_for_reader())) {
             (.., CRUDOperationResult::MatchedRecords(mut buff)) if !buff.is_empty() => unsafe {
                 buff.shrink_to_fit();
 
