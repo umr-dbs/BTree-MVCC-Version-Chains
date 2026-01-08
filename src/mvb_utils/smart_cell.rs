@@ -963,6 +963,9 @@ impl<'a, E: Default> Drop for SmartGuard<'a, E> {
                 if let OLCCell(opt) = cell.0.as_ref() {
                     opt.write_unpin(*pin_version)
                 }
+                else if let LightWeightHybridCell(opt) = cell.0.as_ref() {
+                    opt.write_unpin(*pin_version)
+                }
             HybridRwWriter(.., opt, latch) =>
                 opt.write_unlock(*latch),
             _ => {}
