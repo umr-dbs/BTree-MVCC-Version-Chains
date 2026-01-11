@@ -21,7 +21,7 @@ impl<const FAN_OUT: usize,
     pub(crate) fn has_overflow(&self, node: &Node<FAN_OUT, NUM_RECORDS, Key, Payload>) -> bool {
         match node.is_leaf() {
             true => node.is_overflow(self.block_manager.allocation_leaf()),
-            false => node.is_overflow(self.block_manager.allocation_directory())
+            false => node.is_overflow(self.block_manager.allocation_directory() - 2)
         }
     }
 
@@ -367,6 +367,7 @@ impl<const FAN_OUT: usize,
 
         let len = mufasa.len();
 
+        // TODO: Check this unchecked access gdb says it violets safety checks
         let child_key = unsafe { *mufasa.keys().get_unchecked(child_pos) };
 
         let from_deref

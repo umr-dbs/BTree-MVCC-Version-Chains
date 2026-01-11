@@ -15,6 +15,11 @@ mod mvb_utils;
 mod n_test;
 mod mvb_version_index;
 
+/*
+
+thread '<unnamed>' (18042) panicked at src/mvb_crud_model/query.rs:370:49:
+unsafe precondition(s) violated: slice::get_unchecked requires that the index is within the slice
+ */
 fn main() { 
     startup();
     

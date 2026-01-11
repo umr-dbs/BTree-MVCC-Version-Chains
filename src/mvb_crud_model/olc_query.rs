@@ -70,21 +70,21 @@ impl<const FAN_OUT: usize,
                 let prev_path
                     = history_path.pop_front().unwrap();
 
-                match prev_path.get(prev_path.len() - 2) {
-                    Some((.., parent_leaf)) if !parent_leaf.is_valid() => {
-                        mem::drop(prev_path);
-                        mem::drop(history_path);
-                        mem::drop(local_results);
-                        mem::drop(all_results);
-
-                        *path = Vec::with_capacity(0);
-                        let (visits, retry)
-                            = self.dispatch(CRUDOperation::Range(org_key_interval, version));
-
-                        return (visits + node_visits, retry)
-                    }
-                    _ => {}
-                };
+                // match prev_path.get(prev_path.len() - 2) {
+                //     Some((.., parent_leaf)) if !parent_leaf.is_valid() => {
+                //         mem::drop(prev_path);
+                //         mem::drop(history_path);
+                //         mem::drop(local_results);
+                //         mem::drop(all_results);
+                //
+                //         *path = Vec::with_capacity(0);
+                //         let (visits, retry)
+                //             = self.dispatch(CRUDOperation::Range(org_key_interval, version));
+                //
+                //         return (visits + node_visits, retry)
+                //     }
+                //     _ => {}
+                // };
             }
 
             if !local_results.is_empty() {
@@ -455,10 +455,10 @@ impl<const FAN_OUT: usize,
                     }
 
                     let has_overflow_next
-                        = self.has_overflow(next_guard_result.unwrap());
+                        = !append_op && self.has_overflow(next_guard_result.unwrap());
                     
                     let has_underflow_next
-                        = self.has_underflow(next_guard_result.unwrap());
+                        = !append_op && self.has_underflow(next_guard_result.unwrap());
                     
                     if has_overflow_next || has_underflow_next {
                         if !current_guard.upgrade_write_lock() || !next_guard.upgrade_write_lock() {

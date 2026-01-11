@@ -59,7 +59,7 @@ impl<const FAN_OUT: usize,
             }
             CRUDOperation::Insert(key, payload) => {
                 let (node_visits, guard) = if olc {
-                    self.traversal_write_olc_append(key)
+                    self.traversal_write_olc(key)
                 } else {
                     self.traversal_write(key)
                 };

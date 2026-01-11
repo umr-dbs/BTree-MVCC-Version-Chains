@@ -101,7 +101,7 @@ impl<const FAN_OUT: usize,
     #[inline(always)]
     pub fn is_overflow(&self, allocation: usize) -> bool {
         debug_assert!(allocation >= self.len(),
-                      "Alloc={allocation}, Len={}, node.is_leaf = {}",
+                      "is_overflow: Alloc={allocation}, Len={}, node.is_leaf = {}",
                       self.len(), self.is_leaf());
 
         self.len() >= allocation
@@ -109,9 +109,11 @@ impl<const FAN_OUT: usize,
 
     #[inline(always)]
     pub fn is_underflow(&self, allocation: usize) -> bool {
-        debug_assert!(allocation > 0 && allocation >= self.len());
+        debug_assert!(allocation >= self.len(),
+                      "is_underflow: Alloc={allocation}, Len={}, node.is_leaf = {}",
+                      self.len(), self.is_leaf());
 
-        self.len() < allocation / 2
+        self.len() < ((allocation / 2) as f32).ceil() as usize - 1
     }
 
     #[inline(always)]
@@ -231,24 +233,27 @@ impl<const FAN_OUT: usize,
     #[inline]
     pub fn push_record_point(&mut self, key: Key, payload: Payload, version: Version, kind: VersionIndexType) -> bool {
         match self {
-            Node::Leaf(records_page) => match records_page
-                .as_records()
-                .binary_search_by_key(&key, |event| event.key)
-            {
-                Err(pos) => {
-                    records_page
-                        .as_records_mut()
-                        .insert(pos, VersionedRecordPoint::new(key, version, payload, kind));
+            Node::Leaf(records_page) => {
+                debug_assert!(records_page.len() < NUM_RECORDS, "push_record_point: len={}, alloc={}", records_page.len(), NUM_RECORDS);
+                match records_page
+                    .as_records()
+                    .binary_search_by_key(&key, |event| event.key)
+                {
+                    Err(pos) => {
+                        records_page
+                            .as_records_mut()
+                            .insert(pos, VersionedRecordPoint::new(key, version, payload, kind));
 
-                    true
-                }
-                Ok(pos) => {
-                    records_page
-                        .as_records_mut()
-                        .get_unchecked_mut(pos)
-                        .push(version, payload);
+                        true
+                    }
+                    Ok(pos) => {
+                        records_page
+                            .as_records_mut()
+                            .get_unchecked_mut(pos)
+                            .push(version, payload);
 
-                    true
+                        true
+                    }
                 }
             }
             _ => false
