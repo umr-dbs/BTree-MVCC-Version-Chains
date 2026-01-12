@@ -55,20 +55,20 @@ impl<const FAN_OUT: usize,
         let mut all_results
             = vec![];
 
-        let mut history_path
-            = VecDeque::with_capacity(2);
+        // let mut history_path
+        //     = VecDeque::with_capacity(2);
 
         loop {
-            history_path.push_back(path.to_vec());
+            // history_path.push_back(path.to_vec());
 
             let (visits, local_results) =
                 self.range_query_leaf_results(path, &key_interval, version);
 
             node_visits += visits;
 
-            if history_path.len() >= 2 {
-                let prev_path
-                    = history_path.pop_front().unwrap();
+            // if history_path.len() >= 2 {
+                // let prev_path
+                //     = history_path.pop_front().unwrap();
 
                 // match prev_path.get(prev_path.len() - 2) {
                 //     Some((.., parent_leaf)) if !parent_leaf.is_valid() => {
@@ -85,7 +85,7 @@ impl<const FAN_OUT: usize,
                 //     }
                 //     _ => {}
                 // };
-            }
+            // }
 
             if !local_results.is_empty() {
                 all_results.extend(local_results);
@@ -271,7 +271,13 @@ impl<const FAN_OUT: usize,
                     path.push((fence, leaf_guard));
                     return (node_visits, potential_results)
                 }
-                _ => unreachable!("Found Index but expected leaf = {}", unsafe { leaf_guard.deref_unsafe().unwrap().is_leaf() })
+                _ => {
+                    node_visits += self.next_leaf_page(
+                        path,
+                        path.len() - 1,
+                        key_interval.lower())
+                    // unreachable!("Found Index but expected leaf = {}", unsafe { leaf_guard.deref_unsafe().unwrap().is_leaf() })
+                }
             }
         }
     }
