@@ -28,7 +28,7 @@ impl<const FAN_OUT: usize,
     pub(crate) fn has_underflow(&self, node: &Node<FAN_OUT, NUM_RECORDS, Key, Payload>) -> bool {
         match node.is_leaf() {
             true => node.is_underflow(self.block_manager.allocation_leaf()),
-            false => node.is_underflow(self.block_manager.allocation_directory() - 1)
+            false => node.is_underflow(self.block_manager.allocation_directory())
         }
     }
 

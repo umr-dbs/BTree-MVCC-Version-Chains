@@ -237,64 +237,41 @@ impl<const FAN_OUT: usize,
                                 -> (NodeVisits, Vec<RecordPoint<Key, Payload>>)
     {
         let mut node_visits
-            = 0;
+            = 1;
 
         loop {
-            let (fence, mut leaf_unchecked) =
+            let (fence, mut leaf_guard) =
                 path.pop().unwrap();
 
-            if !leaf_unchecked.upgrade_append_lock() { // hotfix pin: ptr to v_index
-                self.next_leaf_page(path, path.len() - 1, key_interval.lower());
+            if !leaf_guard.upgrade_append_lock() { // hotfix pin: ptr to v_index
+                node_visits += self.next_leaf_page(
+                    path,
+                    path.len() - 1,
+                    key_interval.lower());
                 continue;
             }
 
-            if !leaf_unchecked.is_valid() {
-                node_visits += 1 + self.next_leaf_page(
-                    path,
-                    path.len() - 1,
-                    key_interval.lower);
-                continue
-            }
+            match unsafe { leaf_guard.deref_unsafe() }.unwrap().as_ref() {
+                Node::Leaf(leaf_page) => {
+                    let potential_results = leaf_page
+                        .as_records()
+                        .iter()
+                        .skip_while(|v_record| v_record.key().lt(&key_interval.lower()))
+                        .take_while(|v_record| v_record.key().le(&key_interval.upper()))
+                        .filter_map(|v_record|
+                            match v_record.find(version) {
+                                Some(v_entry) =>
+                                    Some(RecordPoint::new(v_record.key, v_entry.payload)),
+                                _ => None
+                            }
+                        )
+                        .collect::<Vec<_>>();
 
-            match unsafe { leaf_unchecked.deref_unsafe() }.unwrap().as_ref() {
-                Node::Leaf(leaf_page) => unsafe {
-                    let (read, current_read_version)
-                        = leaf_unchecked.is_read_not_obsolete_result();
-
-                    if read {
-                        let mut potential_results = leaf_page
-                            .as_records()
-                            .iter()
-                            .skip_while(|v_record| v_record.key().lt(&key_interval.lower()))
-                            .take_while(|v_record| v_record.key().le(&key_interval.upper()))
-                            .filter_map(|v_record|
-                                match v_record.find(version) {
-                                    Some(v_entry) =>
-                                        Some(RecordPoint::new(v_record.key, v_entry.payload)),
-                                    _ => None
-                                }
-                            )
-                            .collect::<Vec<_>>();
-
-                        let (read, n_current_read_version)
-                            = leaf_unchecked.is_read_not_obsolete_result();
-
-                        if read && n_current_read_version == current_read_version { // avoid write in-between
-                            path.push((fence, leaf_unchecked));
-                            return (node_visits + 1, potential_results)
-                        } else {
-                            potential_results.set_len(0);
-                        }
-                    }
-
-                    path.push((fence, leaf_unchecked));
-
-                    node_visits += 1 + self.next_leaf_page(
-                        path,
-                        path.len() - 2,
-                        key_interval.lower());
+                    leaf_guard.downgrade();
+                    path.push((fence, leaf_guard));
+                    return (node_visits, potential_results)
                 }
-                _ => unreachable!("Found Index but expected leaf = {}", unsafe { leaf_unchecked.deref_unsafe().unwrap().is_leaf() })
+                _ => unreachable!("Found Index but expected leaf = {}", unsafe { leaf_guard.deref_unsafe().unwrap().is_leaf() })
             }
         }
     }
