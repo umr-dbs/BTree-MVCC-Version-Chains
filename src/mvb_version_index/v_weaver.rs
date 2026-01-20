@@ -97,13 +97,10 @@ impl<Key: Hash + Ord + Copy + Default,
     }
 
     #[inline(always)]
-    pub fn delete(&self, insert_version: InsertVersion) -> Option<Payload> {
-        if self.head.load().payload.is_some() {
+    pub fn delete(&self, insert_version: InsertVersion) {
+        if self.is_live() {
             self.append(None, insert_version)
         }
-       else {
-           None
-       }
     }
 
     #[inline(always)]
@@ -112,7 +109,7 @@ impl<Key: Hash + Ord + Copy + Default,
     }
 
     #[inline]
-    pub fn append(&self, payload: Option<Payload>, insert_version: InsertVersion) -> Option<Payload> {
+    pub fn append(&self, payload: Option<Payload>, insert_version: InsertVersion) {
         const COIN_TOSS_PROBABILITY: f64 = 0.5;
 
         if rand::random_bool(COIN_TOSS_PROBABILITY) {
@@ -124,12 +121,9 @@ impl<Key: Hash + Ord + Copy + Default,
     }
 
     #[inline(always)]
-    fn append_next(&self, payload: Option<Payload>, insert_version: InsertVersion) -> Option<Payload> {
+    fn append_next(&self, payload: Option<Payload>, insert_version: InsertVersion) {
         let head
             = self.head.load_full();
-
-        let old_payload
-            = head.payload.as_ref().clone(); // handles tombstones, e.g. insert call
 
         let new_head = Arc::new(VWeaverNodeSt::new_with(
             head.key,
@@ -141,11 +135,10 @@ impl<Key: Hash + Ord + Copy + Default,
         ));
 
         self.head.store(new_head);
-        old_payload
     }
 
     #[inline(always)]
-    fn append_tower(&self, payload: Option<Payload>, insert_version: InsertVersion) -> Option<Payload> {
+    fn append_tower(&self, payload: Option<Payload>, insert_version: InsertVersion) {
         let mut curr
             = self.head.load_full();
 
@@ -173,7 +166,6 @@ impl<Key: Hash + Ord + Copy + Default,
 
         new_tower_node.v_ridgy = Some(curr);
         self.head.store(Arc::new(new_tower_node));
-        old_payload
     }
 
     #[inline(always)]

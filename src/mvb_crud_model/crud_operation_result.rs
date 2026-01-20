@@ -17,9 +17,9 @@ use crate::mvb_record_model::Version;
 pub enum CRUDOperationResult<Key: Ord + Hash + Copy + Default, Payload: Clone + Default> {
     MatchedRecords(Vec<RecordPoint<Key, Payload>>),
     MatchedRecord(Option<RecordPoint<Key, Payload>>),
-    Inserted(Key, Version),
-    Updated(Key, Payload, Version),
-    Deleted(Key, Payload, Version),
+    Inserted(Version),
+    Updated(Version),
+    Deleted(Version),
 
     ZeroAffected(CRUDOperationInnerReason),
 
@@ -52,19 +52,12 @@ impl<Key: Display + Ord + Hash + Copy + Default, Payload: Display + Clone + Defa
                 });
                 write!(f, "]")
             }
-            Inserted(key, version) =>
-                write!(f, "Inserted(key: {}, version: {})",
-                       key, version),
-            Updated(key, payload, version) =>
-                write!(f, "Updated(key: {}, payload: {}, version: {})",
-                       key,
-                       payload,
-                version),
-            Deleted(key, payload, version) =>
-                write!(f, "Deleted(key: {}, payload: {}, version: {})",
-                       key,
-                       payload,
-                       version),
+            Inserted(version) =>
+                write!(f, "Inserted(version: {})", version),
+            Updated(version) =>
+                write!(f, "Updated(version: {})", version),
+            Deleted(version) =>
+                write!(f, "Deleted(version: {})", version),
 
             CRUDOperationResult::ZeroAffected(CRUDOperationInnerReason::KeyAlreadyDeleted) =>
                 write!(f, "ZeroAffected(KeyAlreadyDeleted"),

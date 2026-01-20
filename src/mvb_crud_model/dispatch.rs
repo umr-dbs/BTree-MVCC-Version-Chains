@@ -42,11 +42,11 @@ impl<const FAN_OUT: usize,
                      .unwrap()
                      .delete_key(key, del_version)
                  {
-                     Ok(Some(payload)) =>
+                     Ok(Some(..)) =>
                          {
                              let ret = (node_visits + if is_weaver {
                                  node_visits + self.weaver_callback(guard, key, del_version)
-                             } else { 0 }, CRUDOperationResult::Deleted(key, payload, del_version));
+                             } else { 0 }, CRUDOperationResult::Deleted(del_version));
 
                              ret
                          },
@@ -70,7 +70,7 @@ impl<const FAN_OUT: usize,
                     let res =  (node_visits, guard.deref_mut()
                         .unwrap()
                         .push_record_point(key, payload, ingest_version, self.v_index_type)
-                        .then(|| CRUDOperationResult::Inserted(key, ingest_version))
+                        .then(|| CRUDOperationResult::Inserted(ingest_version))
                         .unwrap_or_default());
 
                     mem::drop(guard);
@@ -91,7 +91,7 @@ impl<const FAN_OUT: usize,
                     {
                         let ret = (node_visits + if is_weaver {
                             node_visits + self.weaver_callback(guard, key, ingest_version)
-                        } else { 0 }, CRUDOperationResult::Inserted(key, ingest_version));
+                        } else { 0 }, CRUDOperationResult::Inserted(ingest_version));
 
                         self.end_tx_commit(ingest_version);
                         ret
@@ -116,8 +116,8 @@ impl<const FAN_OUT: usize,
                         .unwrap()
                         .update_record_point(key, payload, update_version)
                     {
-                        Ok(Some(payload)) =>
-                            CRUDOperationResult::Updated(key, payload, update_version),
+                        Ok(Some(..)) =>
+                            CRUDOperationResult::Updated(update_version),
                         Ok(None) =>
                             CRUDOperationResult::ZeroAffected(KeyDoesNotExist),
                         Err(..) =>
@@ -141,11 +141,11 @@ impl<const FAN_OUT: usize,
                         .unwrap()
                         .update_record_point(key, payload, update_version)
                     {
-                        Ok(Some(payload)) =>
+                        Ok(Some(..)) =>
                             {
                                (node_visits + if is_weaver {
                                     node_visits + self.weaver_callback(guard, key, update_version)
-                                } else { 0 }, CRUDOperationResult::Updated(key, payload, update_version))
+                                } else { 0 }, CRUDOperationResult::Updated(update_version))
                             },
                         Ok(None) =>
                             (node_visits, CRUDOperationResult::ZeroAffected(KeyDoesNotExist)),
@@ -372,21 +372,21 @@ impl<const FAN_OUT: usize,
                         let v_record
                             = leaf_page_records.get_unchecked_mut(0);
 
+                        if !v_record.is_live() {
+                            return (node_visits, CRUDOperationResult::Error)
+                        }
+                        let ret_data
+                            = RecordPoint::new(v_record.key(), v_record.newest_payload());
+
                         let del_version
                             = self.start_tx_commit();
 
-                        (node_visits, match v_record.delete(del_version) {
-                            Some(old_payload) => {
-                                let ret = CRUDOperationResult::Deleted(
-                                    v_record.key(),
-                                    old_payload,
-                                    del_version);
+                        v_record.delete(del_version);
 
-                                self.end_tx_commit(del_version);
-                                ret
-                            },
-                            _ => CRUDOperationResult::Error
-                        })
+                        let ret = CRUDOperationResult::MatchedRecord(Some(ret_data));
+                        self.end_tx_commit(del_version);
+
+                        (node_visits, ret)
                     } else {
                         (node_visits, CRUDOperationResult::Error)
                     }
@@ -406,21 +406,22 @@ impl<const FAN_OUT: usize,
                         let v_record
                             = leaf_page_records.get_unchecked_mut(0);
 
+                        if !v_record.is_live() {
+                            return (node_visits, CRUDOperationResult::Error)
+                        }
+
+                        let ret_data
+                            = RecordPoint::new(v_record.key(), v_record.newest_payload());
+
                         let del_version
                             = self.start_tx_commit();
 
-                        (node_visits, match v_record.delete(del_version) {
-                            Some(old_payload) => {
-                                let ret = CRUDOperationResult::Deleted(
-                                    v_record.key(),
-                                    old_payload,
-                                    del_version);
+                        v_record.delete(del_version);
 
-                                self.end_tx_commit(del_version);
-                                ret
-                            },
-                            _ => CRUDOperationResult::Error
-                        })
+                        let ret = CRUDOperationResult::MatchedRecord(Some(ret_data));
+                        self.end_tx_commit(del_version);
+
+                        (node_visits, ret)
                     } else {
                         (node_visits, CRUDOperationResult::Error)
                     }
@@ -441,21 +442,20 @@ impl<const FAN_OUT: usize,
                         let v_record
                             = leaf_page_records.get_unchecked_mut(len - 1);
 
-                        let del_version
-                            = self.start_tx_commit();
+                        if !v_record.is_live() {
+                            return (node_visits, CRUDOperationResult::Error)
+                        }
 
-                        (node_visits, match v_record.delete(del_version) {
-                            Some(old_payload) => {
-                                let ret = CRUDOperationResult::Deleted(
-                                    v_record.key(),
-                                    old_payload,
-                                    del_version);
+                        let ret_data
+                            = RecordPoint::new(v_record.key(), v_record.newest_payload());
 
-                                self.end_tx_commit(del_version);
-                                ret
-                            },
-                            _ => CRUDOperationResult::Error
-                        })
+                        let del_version = self.start_tx_commit();
+                        v_record.delete(del_version);
+
+                        let ret = CRUDOperationResult::MatchedRecord(Some(ret_data));
+                        self.end_tx_commit(del_version);
+
+                        (node_visits, ret)
                     } else {
                         (node_visits, CRUDOperationResult::Error)
                     }
@@ -476,21 +476,21 @@ impl<const FAN_OUT: usize,
                         let v_record
                             = leaf_page_records.get_unchecked_mut(len - 1);
 
+                        if !v_record.is_live() {
+                            return (node_visits, CRUDOperationResult::Error)
+                        }
+
+                        let ret_data
+                            = RecordPoint::new(v_record.key(), v_record.newest_payload());
+
                         let del_version
                             = self.start_tx_commit();
 
-                        (node_visits, match v_record.delete(del_version) {
-                            Some(old_payload) => {
-                                let ret = CRUDOperationResult::Deleted(
-                                    v_record.key(),
-                                    old_payload,
-                                    del_version);
+                        v_record.delete(del_version);
+                        let ret = CRUDOperationResult::MatchedRecord(Some(ret_data));
+                        self.end_tx_commit(del_version);
 
-                                self.end_tx_commit(del_version);
-                                ret
-                            },
-                            _ => CRUDOperationResult::Error
-                        })
+                        (node_visits, ret)
                     } else {
                         (node_visits, CRUDOperationResult::Error)
                     }

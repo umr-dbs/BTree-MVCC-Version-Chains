@@ -13,6 +13,7 @@ use crate::mvb_page_model::leaf_page::LeafPage;
 // use crate::mvb_record_model::record_point::RecordPoint;
 use crate::mvb_record_model::v_record_point::{VersionIndexType, VersionedRecordPoint};
 use crate::mvb_record_model::Version;
+use crate::mvb_record_model::version_info::VersionInfo;
 // use crate::mvb_record_model::Version;
 // use crate::mvb_record_model::version_info::VersionInfo;
 
@@ -193,18 +194,18 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline]
-    pub fn delete_key(&mut self, key: Key, del_version: Version) -> Result<Option<Payload>, ()> {
+    pub fn delete_key(&mut self, key: Key, del_version: Version) -> Result<Option<()>, ()> {
         match self {
             Node::Leaf(events_page) => match events_page
                 .as_records()
                 .binary_search_by_key(&key, |event| event.key)
-                .map(|found| events_page
+                .map(|found| Some(events_page
                     .as_records_mut()
                     .get_unchecked_mut(found)
                     .version_index_mut()
-                    .delete(del_version))
+                    .delete(del_version)))
             {
-                Ok(Some(payload)) => Ok(Some(payload)),
+                Ok(Some(())) => Ok(Some(())),
                 Ok(None) => Ok(None),
                 _ => Err(())
             }
@@ -213,7 +214,7 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline]
-    pub fn update_record_point(&mut self, key: Key, payload: Payload, version: Version) -> Result<Option<Payload>, ()> {
+    pub fn update_record_point(&mut self, key: Key, payload: Payload, version: Version) -> Result<Option<()>, ()> {
         match self {
             Node::Leaf(events_page) => match events_page
                 .as_records()
@@ -223,7 +224,7 @@ impl<const FAN_OUT: usize,
                     .get_unchecked_mut(found)
                     .append(version, payload))
             {
-                Ok(payload) => Ok(Some(payload)),
+                Ok(()) => Ok(Some(())),
                 _ => Ok(None),
             }
             _ => Err(())

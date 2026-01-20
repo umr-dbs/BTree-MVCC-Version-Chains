@@ -14,6 +14,7 @@ use crate::n_test::NUM_RECORDS;
 use crate::mvb_record_model::v_record_point::{RecordInfo, VersionIndexType};
 use crate::mvb_version_index::vanilla::AtomicVersionList;
 use crate::mvb_record_model::Version;
+use crate::mvb_record_model::version_info::VersionInfo;
 use crate::mvb_utils::safe_cell::SafeCell;
 use crate::mvb_version_index::frugal::AtomicFrugalList;
 use crate::mvb_version_index::v_weaver::{AtomicVWeaverList, WeaverNodeLink};
@@ -234,10 +235,10 @@ impl<Key: Hash + Ord + Copy + Default,
     }
 
     #[inline]
-    pub fn append(&self, insert_version: Version, payload: Payload) -> Payload {
+    pub fn append(&self, insert_version: Version, payload: Payload) {
         match self {
             VersionIndex::FrugalSkipList(fg) => fg
-                .append(Some(payload), insert_version).unwrap(),
+                .append(Some(payload), insert_version),
             VersionIndex::VANILLA(version_list) => version_list
                 .append(insert_version, payload),
             VersionIndex::SkipList(skip_list) => {
@@ -247,11 +248,9 @@ impl<Key: Hash + Ord + Copy + Default,
 
                 if old.value().del_version.get().is_none() {
                     old.value().get_mut().del_version = insert_version.into();
+                    let _ = skip_list
+                        .insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
                 }
-                let _
-                    = skip_list.insert(insert_version, SafeCell::new(RecordInfo::new(payload)));
-
-                old.value().payload.clone()
             }
             VersionIndex::DexaBTree(tree) => {
                 let tree
@@ -279,17 +278,17 @@ impl<Key: Hash + Ord + Copy + Default,
                     .dispatch(CRUDOperation::Insert(insert_version, RecordInfo::new(payload)))
                     .1
                 {
-                    CRUDOperationResult::Inserted(..) => old.payload.payload,
+                    CRUDOperationResult::Inserted(..) => { },
                     _ => unreachable!()
                 }
             }
             VersionIndex::VWEAVER(weaver) =>
-                weaver.append(Some(payload), insert_version).unwrap()
+                weaver.append(Some(payload), insert_version)
         }
     }
 
     #[inline]
-    pub fn delete(&self, del_version: Version) -> Option<Payload> {
+    pub fn delete(&self, del_version: Version) {
         match self {
             VersionIndex::FrugalSkipList(fg) => fg
                 .delete(del_version),
@@ -308,10 +307,6 @@ impl<Key: Hash + Ord + Copy + Default,
                 {
                     current.value().get_mut().del_version
                         = del_version.into();
-
-                    Some(current.value().payload.clone())
-                } else {
-                    None
                 }
             }
             VersionIndex::DexaBTree(tree) => {
@@ -330,14 +325,11 @@ impl<Key: Hash + Ord + Copy + Default,
                     {
                         entry_record.payload.del_version = del_version.into();
                         match tree.dispatch(CRUDOperation::Update(entry_record.key, entry_record.payload)).1 {
-                            CRUDOperationResult::Updated(.., v) =>
-                                return Some(v.payload),
+                            CRUDOperationResult::Updated(..) => return,
                             _ => unreachable!(),
                         }
                     }
                 }
-
-                None
             }
             VersionIndex::VWEAVER(weaver) =>
                 weaver.delete(del_version)

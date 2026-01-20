@@ -64,6 +64,23 @@ pub(crate) fn main_load(parms: Vec<String>) {
                  num_cpus::get(),
                  if concurrent { format!("Continuous\n- OLTP Threads = {scans_per_thread}") } else { format!("{scans_per_thread}") });
 
+        let mut oltp_file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .append(true)
+            .open("oltp.csv")
+            .unwrap();
+
+        oltp_file.write_all(b"\
+        is_concurrent,\
+        oltp_threads,\
+        olap_threads,\
+        v_index,\
+        skew,\
+        slice_per_thread,\
+        rest_slice,\n"
+        ).unwrap();
+
         if concurrent {
             let query_file_name_clone = query_file_name.clone();
             let mut oltp = load_query_into_memory(
@@ -72,9 +89,21 @@ pub(crate) fn main_load(parms: Vec<String>) {
             let oltp_threads = scans_per_thread;
             let slice = oltp.len() / oltp_threads;
 
-            let work_oltp = (0..oltp_threads)
+            let mut work_oltp = (0..oltp_threads)
                 .map(|_| oltp.drain(..slice).collect_vec())
                 .collect_vec();
+
+            let rest_slice = oltp.len();
+            work_oltp.first_mut().unwrap().extend(oltp);
+            oltp_file.write_all(format!("\
+            true,\
+            {oltp_threads},\
+            {num_olaps},\
+            {v_index},\
+            {skew},\
+            {slice},\
+            {rest_slice}\n").as_bytes()).unwrap();
+
 
             let oltp_joins = work_oltp
                 .into_iter()
@@ -118,6 +147,14 @@ pub(crate) fn main_load(parms: Vec<String>) {
         } else {
             let num = load_query(query_file_name.as_str(), index.clone(), None);
 
+            oltp_file.write_all(format!("\
+            false,\
+            1,\
+            {num_olaps},\
+            MVTree,\
+            {skew},\
+            {num},\
+            0\n").as_bytes()).unwrap();
             println!("- Executed {} CRUD operations from {query_file_name}, \
                  starting OLAPs...", format_insertions(num));
 
@@ -132,6 +169,8 @@ pub(crate) fn main_load(parms: Vec<String>) {
             println!("- Executed = {} OLAPs", format_insertions(num_scans_executed));
             println!("###### End Command: {} ######", parms.iter().skip(1).join(" "));
         }
+
+        oltp_file.flush().unwrap();
     }
 }
 
@@ -467,7 +506,7 @@ pub(crate) fn main_test(parms: Vec<String>) {
 
             if !check.contains_key(&key) {
                 match tree.dispatch(CRUDOperation::Insert(key, Payload::default())).1 {
-                    CRUDOperationResult::Inserted(_, v) => {
+                    CRUDOperationResult::Inserted(v) => {
                         check.insert(key, v);
                     }
                     _ => {

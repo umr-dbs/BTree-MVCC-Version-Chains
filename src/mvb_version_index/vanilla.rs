@@ -115,11 +115,9 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionLi
     }
 
     #[inline]
-    pub fn append(&self, insert_version: Version, payload: Payload) -> Payload {
+    pub fn append(&self, insert_version: Version, payload: Payload) {
         let head
             = self.head.load_full();
-
-        let old_ele = head.payload.clone();
 
         let new_head = Arc::new(VersionedEntry {
             next: Some(head.clone()),
@@ -133,21 +131,15 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicVersionLi
         }
 
         self.head.store(new_head);
-
-        old_ele
     }
 
     #[inline]
-    pub fn delete(&self, del_version: Version) -> Option<Payload> {
+    pub fn delete(&self, del_version: Version) {
         let head
             = self.head.load_full();
 
         if head.insert_version < del_version && head.del_version.get() == Version::MAX {
             head.del_version.set(del_version);
-
-            Some(head.payload.clone())
-        } else {
-            None
         }
     }
 
