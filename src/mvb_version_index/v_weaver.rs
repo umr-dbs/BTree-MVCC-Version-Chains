@@ -327,7 +327,7 @@ impl<const FAN_OUT: usize,
 
         let mut result = vec![];
         let mut parent_index = 0;
-
+        let mut attempts = 0;
         loop {
             node_visits +=
                 self.next_leaf_page(path.as_mut(), parent_index, interval.lower);
@@ -335,8 +335,16 @@ impl<const FAN_OUT: usize,
             parent_index
                 = path.len().checked_sub(2).unwrap_or(0);
 
-            match path.pop() {
-                Some((leaf_fence, leaf_guard)) => unsafe {
+            if let Some((leaf_fence, mut leaf_guard)) = path.pop() {
+                if !leaf_guard.upgrade_append_lock() {
+                    node_visits += 1;
+                    attempts += 1;
+
+                    sched_yield(attempts);
+                    continue;
+                }
+
+                unsafe {
                     if let Some(leaf_block) = leaf_guard.deref_unsafe() {
                         match leaf_block
                             .as_records()
@@ -346,8 +354,9 @@ impl<const FAN_OUT: usize,
                             .find_map(|record|
                                 record.find_weaver_node(version))
                         {
-                            _ if !leaf_guard.is_valid() => continue,
                             Some(weaver_node) => {
+                                leaf_guard.downgrade();
+
                                 let mut last_key = weaver_node.key;
                                 VWeaverKeyRidgyIterator::from(weaver_node)
                                     .take_while(|node|
@@ -375,8 +384,53 @@ impl<const FAN_OUT: usize,
                         unreachable!("Weaver scan dispatch: Path doesn't contain valid blocks")
                     }
                 }
-                _ => break // empty index
             }
+            else {
+                break
+            }
+
+            // match path.pop() {
+            //     Some((leaf_fence, leaf_guard)) => unsafe {
+            //         if let Some(leaf_block) = leaf_guard.deref_unsafe() {
+            //             match leaf_block
+            //                 .as_records()
+            //                 .iter()
+            //                 .skip_while(|record|
+            //                     !interval.contains(record.key))
+            //                 .find_map(|record|
+            //                     record.find_weaver_node(version))
+            //             {
+            //                 _ if !leaf_guard.is_valid() => continue,
+            //                 Some(weaver_node) => {
+            //                     let mut last_key = weaver_node.key;
+            //                     VWeaverKeyRidgyIterator::from(weaver_node)
+            //                         .take_while(|node|
+            //                             interval.contains(node.key))
+            //                         .filter_map(|node|
+            //                             VWeaverNodeSt::find(node, version, false))
+            //                         .map(|node| RecordPoint::new(
+            //                             node.key,
+            //                             node.payload.as_ref().clone().unwrap()))
+            //                         .for_each(|node| {
+            //                             last_key = node.key; // for fence clearing
+            //                             result.push(node);
+            //                         });
+            //
+            //                     interval.lower = (self.inc_key)(last_key)
+            //                 },
+            //                 _ => interval.lower = (self.inc_key)(leaf_fence.upper)
+            //             }
+            //
+            //             if interval.lower >= interval.upper { // checked after dispatch
+            //                 break
+            //             }
+            //         }
+            //         else {
+            //             unreachable!("Weaver scan dispatch: Path doesn't contain valid blocks")
+            //         }
+            //     }
+            //     _ => break // empty index
+            // }
         }
 
         (node_visits, result)

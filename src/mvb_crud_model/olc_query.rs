@@ -258,16 +258,27 @@ impl<const FAN_OUT: usize,
                         .iter()
                         .skip_while(|v_record| v_record.key().lt(&key_interval.lower()))
                         .take_while(|v_record| v_record.key().le(&key_interval.upper()))
+                        // .filter_map(|v_record|
+                        //     match v_record.find(version) {
+                        //         Some(v_entry) =>
+                        //             Some(RecordPoint::new(v_record.key, v_entry.payload)),
+                        //         _ => None
+                        //     }
+                        // )
+                        .cloned()
+                        .collect::<Vec<_>>();
+
+                    leaf_guard.downgrade();
+
+                    let potential_results = potential_results
+                        .into_iter()
                         .filter_map(|v_record|
                             match v_record.find(version) {
                                 Some(v_entry) =>
                                     Some(RecordPoint::new(v_record.key, v_entry.payload)),
                                 _ => None
-                            }
-                        )
+                            })
                         .collect::<Vec<_>>();
-
-                    leaf_guard.downgrade();
                     path.push((fence, leaf_guard));
                     return (node_visits, potential_results)
                 }
