@@ -64,6 +64,7 @@ pub(crate) fn main_load(parms: Vec<String>) {
                  num_cpus::get(),
                  if concurrent { format!("Continuous\n- OLTP Threads = {scans_per_thread}") } else { format!("{scans_per_thread}") });
 
+        let oltp_there = fs::exists("oltp.csv").unwrap();
         let mut oltp_file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -71,15 +72,21 @@ pub(crate) fn main_load(parms: Vec<String>) {
             .open("oltp.csv")
             .unwrap();
 
-        oltp_file.write_all(b"\
+        if !oltp_there {
+            oltp_file.write_all(b"\
         is_concurrent,\
         oltp_threads,\
         olap_threads,\
         v_index,\
         skew,\
         slice_per_thread,\
-        rest_slice,\n"
-        ).unwrap();
+        rest_slice,\
+        total_num_scan_tx,\
+        total_num_oltp_tx,
+        total_oltp_time,\
+        total_olap_time\n"
+            ).unwrap();
+        }
 
         if concurrent {
             let query_file_name_clone = query_file_name.clone();
@@ -102,7 +109,7 @@ pub(crate) fn main_load(parms: Vec<String>) {
             {v_index},\
             {skew},\
             {slice},\
-            {rest_slice}\n").as_bytes()).unwrap();
+            {rest_slice}").as_bytes()).unwrap();
 
             let start_time_oltp = Instant::now();
             let oltp_joins = work_oltp

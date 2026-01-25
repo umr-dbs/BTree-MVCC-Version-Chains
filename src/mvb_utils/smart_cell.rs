@@ -514,20 +514,22 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
             OLCWriter(cell, latch)
             if *latch & OBSOLETE_FLAG_VERSION == 0 => unsafe {
                 if let OLCCell(opt) = cell.0.as_ref() {
+                    opt.write_unlock(*latch);
+
                     let reader
                         = OLCReader(Some((transmute_copy(cell), (*latch + 1) & !WRITE_FLAG_VERSION)));
 
-                    opt.write_unlock(*latch);
                     ptr::write(self, reader);
                 }
             }
             OLCAppendPin(cell, latch) |
             OLCReaderPin(cell, latch) => unsafe {
                 if let OLCCell(opt) = cell.0.as_ref() {
+                    opt.write_unpin(*latch);
+
                     let reader
                         = OLCReader(Some((transmute_copy(cell), *latch ^ PIN_FLAG_VERSION)));
-            
-                    opt.write_unpin(*latch);
+
                     ptr::write(self, reader);
                 }
             }
