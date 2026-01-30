@@ -74,17 +74,17 @@ pub(crate) fn main_load(parms: Vec<String>) {
 
         if !oltp_there {
             oltp_file.write_all(b"\
-        is_concurrent,\
-        oltp_threads,\
-        olap_threads,\
-        v_index,\
-        skew,\
-        slice_per_thread,\
-        rest_slice,\
-        total_num_scan_tx,\
-        total_num_oltp_tx,
-        total_oltp_time,\
-        total_olap_time\n"
+            is_concurrent,\
+            oltp_threads,\
+            olap_threads,\
+            v_index,\
+            skew,\
+            slice_per_thread,\
+            rest_slice,\
+            total_num_scan_tx,\
+            total_num_oltp_tx,\
+            total_oltp_time,\
+            total_olap_time\n"
             ).unwrap();
         }
 
