@@ -186,7 +186,7 @@ pub(crate) fn main_load(parms: Vec<String>) {
             false,\
             1,\
             {num_olaps},\
-            MVTree,\
+            {v_index},\
             {skew},\
             {num},\
             0,\
