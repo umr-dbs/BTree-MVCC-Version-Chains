@@ -50,6 +50,13 @@ pub(crate) fn main_load(parms: Vec<String>) {
             "w"  => VersionIndexType::VWEAVER,
             _ => VersionIndexType::default()
         };
+
+        let gc =
+            parms[9].parse::<bool>().unwrap_or(false);
+
+        let in_place_update
+            = parms[10].parse::<bool>().unwrap_or(false);
+
         let index
             = Arc::new(new_INDEX(OLC, v_index));
 
@@ -59,7 +66,8 @@ pub(crate) fn main_load(parms: Vec<String>) {
                 - Scans/Thread = {}\n\
                 - Skew = {skew}\n\
                 - Range = {range}\n\
-                - Version Index = {v_index}",
+                - Version Index = {v_index}\n\
+                - GC = {gc}\n",
                  num_cpus::get_physical(),
                  num_cpus::get(),
                  if concurrent { format!("Continuous\n- OLTP Threads = {scans_per_thread}") } else { format!("{scans_per_thread}") });
