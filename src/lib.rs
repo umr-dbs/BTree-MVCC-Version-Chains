@@ -161,7 +161,7 @@ pub extern "C" fn init_tree(p: c_int, e1: c_int, e2: c_int) -> *mut c_void {
         _ => orwc(),
     };
     
-    Box::into_raw(Box::new(BTreeApiExport(new_INDEX(lp, V_INDEX_KIND)))) as _
+    Box::into_raw(Box::new(BTreeApiExport(new_INDEX(lp, V_INDEX_KIND, false)))) as _
 }
 
 #[no_mangle]

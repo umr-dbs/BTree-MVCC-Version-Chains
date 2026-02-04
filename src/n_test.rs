@@ -58,7 +58,7 @@ pub(crate) fn main_load(parms: Vec<String>) {
             = parms[10].parse::<bool>().unwrap_or(false);
 
         let index
-            = Arc::new(new_INDEX(OLC, v_index));
+            = Arc::new(new_INDEX(OLC, v_index, gc));
 
         println!("- QueryFile = {query_file_name}\n\
                 - Concurrent = {concurrent}\n\
@@ -468,83 +468,7 @@ fn load_query(query_file: &str,
     query_count
 }
 
-pub(crate) fn main_insert_rate_limiter(parms: Vec<String>) {
-    {
-        let log                = parms[2].parse::<bool>().unwrap_or(false);
-        let runtime_sec        = parms[3].parse::<u64>().unwrap_or(10);
-        let num_workers        = parms[4].parse::<usize>().unwrap_or(10);
-        let fps               = parms[5].parse::<usize>().unwrap_or(100);
-        let crud                    = CRUDOperation::InsertRand;
-        let olap_workers      = parms[6].parse::<usize>().unwrap_or(10);
-        let olaps_per_worker  = parms[7].parse::<usize>().unwrap_or(10);
-        let olap_skew_workers   = parms[8].parse::<f32>().unwrap_or(0f32);
-        let olaps_key_range    = parms[9].parse::<Key>().unwrap_or(Key::MAX);
-        let olaps_si_freshest  = parms[10].parse::<bool>().unwrap_or(false);
 
-        let v_type = match parms[7].as_str() {
-            "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
-            "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
-            "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
-            "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
-            "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
-        };
-
-        let index = Arc::new(new_INDEX(OLC, v_type));
-
-        let (info_sender, info_receiver)
-            = unbounded();
-
-        let file_name
-            = format!("btree_runtime_{runtime_sec}_workers_{num_workers}_fps_{fps}_crud_{crud}.csv");
-
-        let _ = fs::remove_file(file_name.as_str());
-        let mut log_file = BufWriter::new(OpenOptions::new()
-            .write(true)
-            .append(true)
-            .create(true)
-            .open(file_name.as_str()).unwrap());
-
-        log_file.write_all(b"tid,crud,fps,load,tick_ops,total_ops\n").unwrap();
-
-        let start_time       = Instant::now();
-        let workers = (0..num_workers)
-            .map(|_| ThreadWorker::new(
-                index.clone(),
-                fps,
-                crud.clone(),
-                log,
-                info_sender.clone()))
-            .collect_vec();
-
-        let signal = info_receiver.clone();
-        spawn(move || olap_tests(
-            index,
-            olap_workers,
-            olaps_per_worker,
-            olap_skew_workers,
-            Either::Left(olaps_key_range),
-            olaps_si_freshest,
-            Some(signal)));
-
-        while start_time.elapsed().as_secs() < runtime_sec {
-            match info_receiver.try_recv() {
-                Ok(info) =>
-                    log_file.write_all(format!("{}\n", info).as_bytes()).unwrap(),
-                _ => thread::yield_now()
-            }
-        }
-
-        println!("Total Ops = {}", workers
-            .into_iter()
-            .map(|t| t.stop())
-            .collect_vec()
-            .into_iter()
-            .map(|handle| handle.join().unwrap())
-            .sum::<usize>());
-
-        mem::drop(info_receiver);
-    }
-}
 pub(crate) fn main_test(parms: Vec<String>) {
     {
         let n = parms[2].parse().unwrap();
@@ -561,7 +485,7 @@ pub(crate) fn main_test(parms: Vec<String>) {
         };
 
         println!("v_index = {v_type}");
-        let tree = Arc::new(new_INDEX(OLC, v_type));
+        let tree = Arc::new(new_INDEX(OLC, v_type, false));
         let mut check = HashMap::new();
         let mut errors = 0;
 
@@ -622,7 +546,7 @@ pub(crate) fn main_load_cc_new(parms: Vec<String>) {
             "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
         };
         let index
-            = Arc::new(new_INDEX(OLC, v_type));
+            = Arc::new(new_INDEX(OLC, v_type, false));
 
         println!("Created BTree with version index = '{v_type}..");
 

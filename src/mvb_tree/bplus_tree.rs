@@ -30,6 +30,7 @@ pub struct MVBPlusTree<
     pub(crate) block_manager: BlockManager<FAN_OUT, NUM_RECORDS, Key, Payload>,
     pub(crate) global_clock: GlobalClock,
     pub(crate) v_index_type: VersionIndexType,
+    pub(crate) gc: bool,
     pub(crate) min_key: Key,
     pub(crate) max_key: Key,
     pub(crate) inc_key: fn(Key) -> Key,
@@ -59,13 +60,14 @@ impl<const FAN_OUT: usize,
             u64::MAX,
             inc_key,
             dec_key,
-            VersionIndexType::VANILLA)
+            VersionIndexType::VANILLA,
+            false)
     }
 }
 
 #[allow(non_snake_case)]
-pub fn new_INDEX(locking_strategy: LockingStrategy, kind: VersionIndexType) -> INDEX {
-   MVBPlusTree::new_with(locking_strategy, u64::MIN, u64::MAX, inc_key, dec_key, kind)
+pub fn new_INDEX(locking_strategy: LockingStrategy, kind: VersionIndexType, gc: bool) -> INDEX {
+   MVBPlusTree::new_with(locking_strategy, u64::MIN, u64::MAX, inc_key, dec_key, kind, gc)
 }
 
 impl<const FAN_OUT: usize,
@@ -90,7 +92,8 @@ impl<const FAN_OUT: usize,
             max_key: Key,
             inc_key: fn(Key) -> Key,
             dec_key: fn(Key) -> Key,
-            v_index_type: VersionIndexType) -> Self
+            v_index_type: VersionIndexType,
+            gc: bool) -> Self
     {
         let empty_node
             = block_manager.new_empty_leaf();
@@ -107,7 +110,8 @@ impl<const FAN_OUT: usize,
             inc_key,
             dec_key,
             global_clock: GlobalClock::new(),
-            v_index_type
+            v_index_type,
+            gc,
         }
     }
 
@@ -124,14 +128,15 @@ impl<const FAN_OUT: usize,
                     max_key: Key,
                     inc_key: fn(Key) -> Key,
                     dec_key: fn(Key) -> Key,
-                    version_index_type: VersionIndexType) -> Self
+                    version_index_type: VersionIndexType,
+                    gc: bool) -> Self
     {
-        Self::make(BlockManager::default(), locking_strategy, min_key, max_key, inc_key, dec_key, version_index_type)
+        Self::make(BlockManager::default(), locking_strategy, min_key, max_key, inc_key, dec_key, version_index_type, gc)
     }
 
     #[inline(always)]
-    pub fn new(min_key: Key, max_key: Key, inc_key: fn(Key) -> Key, dec_key: fn(Key) -> Key, version_index_type: VersionIndexType) -> Self {
-        Self::new_with(LockingStrategy::default(), min_key, max_key, inc_key, dec_key, version_index_type)
+    pub fn new(min_key: Key, max_key: Key, inc_key: fn(Key) -> Key, dec_key: fn(Key) -> Key, version_index_type: VersionIndexType, gc: bool) -> Self {
+        Self::new_with(LockingStrategy::default(), min_key, max_key, inc_key, dec_key, version_index_type, gc)
     }
 
     #[inline(always)]

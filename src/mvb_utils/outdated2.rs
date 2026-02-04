@@ -3,7 +3,7 @@ use std::fmt::{Display, Formatter};
 use std::{fs, mem, thread};
 use std::fs::OpenOptions;
 use std::hash::{Hash, Hasher};
-use std::io::Write;
+use std::io::{BufWriter, Write};
 use std::ops::{Add, Deref, DerefMut, Div, RangeInclusive, Sub};
 use std::path::Path;
 use std::ptr::slice_from_raw_parts;
@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::atomic::Ordering::{Acquire, Relaxed, SeqCst};
 use std::thread::{spawn, JoinHandle};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 use crossbeam::channel::TryRecvError;
 use hashbrown::HashMap;
 use itertools::{all, Itertools};
@@ -32,6 +32,83 @@ use crate::tree::bplus_tree::BPlusTree;
 use crate::utils::interval::Interval;
 use crate::utils::smart_cell::COUNTERS;
 
+pub(crate) fn main_insert_rate_limiter(parms: Vec<String>) {
+    {
+        let log                = parms[2].parse::<bool>().unwrap_or(false);
+        let runtime_sec        = parms[3].parse::<u64>().unwrap_or(10);
+        let num_workers        = parms[4].parse::<usize>().unwrap_or(10);
+        let fps               = parms[5].parse::<usize>().unwrap_or(100);
+        let crud                    = CRUDOperation::InsertRand;
+        let olap_workers      = parms[6].parse::<usize>().unwrap_or(10);
+        let olaps_per_worker  = parms[7].parse::<usize>().unwrap_or(10);
+        let olap_skew_workers   = parms[8].parse::<f32>().unwrap_or(0f32);
+        let olaps_key_range    = parms[9].parse::<Key>().unwrap_or(Key::MAX);
+        let olaps_si_freshest  = parms[10].parse::<bool>().unwrap_or(false);
+
+        let v_type = match parms[7].as_str() {
+            "l" | "ll" | "linkedlists" | "vanilla" => VersionIndexType::VANILLA,
+            "sk" | "skiplist" | "skiplists" => VersionIndexType::SkipList,
+            "fg" | "f" | "frugallists" => VersionIndexType::FrugalSkipList,
+            "weaver" | "vweaver" | "w" => VersionIndexType::VWEAVER,
+            "btree" | "index" | "dexa" | _ => VersionIndexType::BTree,
+        };
+
+        let index = Arc::new(new_INDEX(OLC, v_type));
+
+        let (info_sender, info_receiver)
+            = unbounded();
+
+        let file_name
+            = format!("btree_runtime_{runtime_sec}_workers_{num_workers}_fps_{fps}_crud_{crud}.csv");
+
+        let _ = fs::remove_file(file_name.as_str());
+        let mut log_file = BufWriter::new(OpenOptions::new()
+            .write(true)
+            .append(true)
+            .create(true)
+            .open(file_name.as_str()).unwrap());
+
+        log_file.write_all(b"tid,crud,fps,load,tick_ops,total_ops\n").unwrap();
+
+        let start_time       = Instant::now();
+        let workers = (0..num_workers)
+            .map(|_| ThreadWorker::new(
+                index.clone(),
+                fps,
+                crud.clone(),
+                log,
+                info_sender.clone()))
+            .collect_vec();
+
+        let signal = info_receiver.clone();
+        spawn(move || olap_tests(
+            index,
+            olap_workers,
+            olaps_per_worker,
+            olap_skew_workers,
+            Either::Left(olaps_key_range),
+            olaps_si_freshest,
+            Some(signal)));
+
+        while start_time.elapsed().as_secs() < runtime_sec {
+            match info_receiver.try_recv() {
+                Ok(info) =>
+                    log_file.write_all(format!("{}\n", info).as_bytes()).unwrap(),
+                _ => thread::yield_now()
+            }
+        }
+
+        println!("Total Ops = {}", workers
+            .into_iter()
+            .map(|t| t.stop())
+            .collect_vec()
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .sum::<usize>());
+
+        mem::drop(info_receiver);
+    }
+}
 
 // fn seq_create() {
 //     let insert: Key = 1_000_000;
