@@ -54,7 +54,7 @@ pub(crate) fn main_load(parms: Vec<String>) {
         let gc =
             parms[9].parse::<bool>().unwrap_or(false);
 
-        let in_place_update
+        let update_in_place
             = parms[10].parse::<bool>().unwrap_or(false);
 
         let index
@@ -87,8 +87,12 @@ pub(crate) fn main_load(parms: Vec<String>) {
             olap_threads,\
             v_index,\
             skew,\
+            gc,\
+            update_in_place,\
             slice_per_thread,\
             rest_slice,\
+            blocks_allocated,\
+            blocks_reused,\
             total_num_scan_tx,\
             total_num_oltp_tx,\
             total_oltp_time,\
@@ -116,6 +120,8 @@ pub(crate) fn main_load(parms: Vec<String>) {
             {num_olaps},\
             {v_index},\
             {skew},\
+            {gc},\
+            {update_in_place},\
             {slice},\
             {rest_slice}").as_bytes()).unwrap();
 
@@ -137,8 +143,11 @@ pub(crate) fn main_load(parms: Vec<String>) {
             let (olap_signal, olap_sink)
                 = unbounded();
 
+            let index_olaps
+                = index.clone();
+
             let olaps = spawn(move || olap_tests(
-                index,
+                index_olaps,
                 num_olaps,
                 1,
                 skew,
@@ -155,7 +164,14 @@ pub(crate) fn main_load(parms: Vec<String>) {
             drop(olap_signal);
             let (num_scans_executed, olap_total_time) = olaps.join().unwrap();
 
+            let alloc_blocks
+                = index.block_manager.alloc_count.load(SeqCst);
+
+            let reuse_blocks = 0; // TODO
+
             oltp_file.write_all(format!(",\
+            {alloc_blocks},\
+            {reuse_blocks},\
             {num_scans_executed},\
             {oltp_executed},\
             {oltp_total_time},\
@@ -182,13 +198,19 @@ pub(crate) fn main_load(parms: Vec<String>) {
             println!("- Executed {} CRUD operations from {query_file_name}, \
                  starting OLAPs...", format_insertions(num));
 
-            let (num_scans_executed, olap_total_time) = olap_tests(index,
-                                                num_olaps,
-                                                scans_per_thread,
-                                                skew,
-                                                Either::Left(range),
-                                                false,
-                                                None);
+            let (num_scans_executed, olap_total_time) = olap_tests(
+                index.clone(),
+                num_olaps,
+                scans_per_thread,
+                skew,
+                Either::Left(range),
+                false,
+                None);
+
+            let alloc_blocks
+                = index.block_manager.alloc_count.load(SeqCst);
+
+            let reuse_blocks = 0; // TODO
 
             oltp_file.write_all(format!("\
             false,\
@@ -196,8 +218,12 @@ pub(crate) fn main_load(parms: Vec<String>) {
             {num_olaps},\
             {v_index},\
             {skew},\
+            {gc},\
+            {update_in_place},\
             {num},\
             0,\
+            {alloc_blocks},\
+            {reuse_blocks},\
             {num_scans_executed},\
             {num},\
             {oltp_total_time},\

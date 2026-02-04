@@ -35,6 +35,11 @@ impl<const FAN_OUT: usize,
     }
 }
 
+pub(crate) enum SplitType {
+    Split,
+    FilterDeletes
+}
+
 impl<const FAN_OUT: usize,
     const NUM_RECORDS: usize,
     Key: Default + Ord + Copy + Hash,
@@ -55,6 +60,25 @@ impl<const FAN_OUT: usize,
             LatchType::Hybrid => self.into_hybrid(),
             LatchType::None => self.into_free(),
             LatchType::LightWeightHybrid => self.into_lightweight_hybrid()
+        }
+    }
+
+    pub(crate) fn split_type(&self) -> SplitType {
+        if self.is_directory() {
+            return SplitType::Split
+        }
+
+        let count_deleted = self
+            .as_records()
+            .iter()
+            .filter(|r| !r.is_live())
+            .count();
+
+        if count_deleted < (NUM_RECORDS as f64 * 0.4f64).ceil() as _ {
+            SplitType::Split
+        }
+        else {
+            SplitType::FilterDeletes
         }
     }
 }

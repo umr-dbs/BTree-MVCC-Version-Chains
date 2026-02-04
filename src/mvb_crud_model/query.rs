@@ -5,7 +5,7 @@ use std::{mem, ptr};
 use itertools::Itertools;
 use crate::mvb_locking::locking_strategy::LockingStrategy;
 use crate::mvb_page_model::{Attempts, BlockRef, Height, Level};
-use crate::mvb_block::block::{Block, BlockGuard};
+use crate::mvb_block::block::{Block, BlockGuard, SplitType};
 use crate::mvb_crud_model::crud_api::NodeVisits;
 use crate::mvb_page_model::node::{Node, NodeUnsafeDegree};
 use crate::mvb_tree::bplus_tree::{MVBPlusTree, INIT_TREE_HEIGHT, LockLevel, MAX_TREE_HEIGHT};
@@ -280,44 +280,54 @@ impl<const FAN_OUT: usize,
                     n_height);
             }
             Node::Leaf(records) => unsafe {
-                let records
-                    = records.as_records();
+                let records_filtered = records
+                    .as_records()
+                    .iter()
+                    .filter_map(|r|
+                        r.is_live().then(|| r.clone()))
+                    .collect_vec();
 
-                let records_mid
-                    = records.len() / 2;
+                match root_guard.deref_unsafe().unwrap().split_type() {
+                    SplitType::Split => {
+                        let records_mid
+                            = records_filtered.len() / 2;
 
-                let k3 = records
-                    .get_unchecked(records_mid)
-                    .key;
+                        let k3 = records_filtered
+                            .get_unchecked(records_mid)
+                            .key;
 
-                let new_node_right
-                    = self.block_manager.new_empty_leaf();
+                        let new_node_right
+                            = self.block_manager.new_empty_leaf();
 
-                let new_node_left
-                    = self.block_manager.new_empty_leaf();
+                        let new_node_left
+                            = self.block_manager.new_empty_leaf();
 
-                let new_root
-                    = self.block_manager.new_empty_index_block();
+                        let new_root
+                            = self.block_manager.new_empty_index_block();
 
-                new_node_right
-                    .records_mut()
-                    .extend_from_slice(records.get_unchecked(records_mid..));
+                        new_node_right
+                            .records_mut()
+                            .extend_from_slice(records_filtered.get_unchecked(records_mid..));
 
-                new_node_left
-                    .records_mut()
-                    .extend_from_slice(records.get_unchecked(..records_mid));
+                        new_node_left
+                            .records_mut()
+                            .extend_from_slice(records_filtered.get_unchecked(..records_mid));
 
-                new_root.children_mut().extend([
-                    new_node_left.into_cell(latch_type),
-                    new_node_right.into_cell(latch_type)
-                ]);
+                        new_root.children_mut().extend([
+                            new_node_left.into_cell(latch_type),
+                            new_node_right.into_cell(latch_type)
+                        ]);
 
-                new_root.keys_mut()
-                    .push(k3);
+                        new_root.keys_mut()
+                            .push(k3);
 
-                self.set_new_root(
-                    new_root,
-                    n_height);
+                        self.set_new_root(
+                            new_root,
+                            n_height);
+                    }
+                    SplitType::FilterDeletes => {}
+                }
+
             }
         }
 
@@ -740,44 +750,56 @@ impl<const FAN_OUT: usize,
                     .insert(child_pos, k3);
             }
             Node::Leaf(records) => unsafe {
-                let records
-                    = records.as_records();
+                let records_filtered = records
+                    .as_records()
+                    .iter()
+                    .filter_map(|r|
+                        r.is_live().then(|| r.clone()))
+                    .collect_vec();
 
-                let records_mid = records.len() / 2;
-                let k3 = records
-                    .get_unchecked(records_mid)
-                    .key;
+                match from_guard.deref_unsafe().unwrap().split_type() {
+                    SplitType::Split => {
+                        let records_mid = records_filtered.len() / 2;
+                        let k3 = records_filtered
+                            .get_unchecked(records_mid)
+                            .key;
 
-                let new_node
-                    = self.block_manager.new_empty_leaf();
+                        let new_node
+                            = self.block_manager.new_empty_leaf();
 
-                let new_node_from
-                    = self.block_manager.new_empty_leaf();
+                        let new_node_from
+                            = self.block_manager.new_empty_leaf();
 
-                new_node
-                    .records_mut()
-                    .extend_from_slice(records.get_unchecked(records_mid..));
+                        new_node
+                            .records_mut()
+                            .extend_from_slice(records_filtered.get_unchecked(records_mid..));
 
-                new_node_from
-                    .records_mut()
-                    .extend_from_slice(records.get_unchecked(..records_mid));
+                        new_node_from
+                            .records_mut()
+                            .extend_from_slice(records_filtered.get_unchecked(..records_mid));
 
-                let parent_mut = parent_guard
-                    .deref_mut()
-                    .unwrap();
+                        let parent_mut = parent_guard
+                            .deref_mut()
+                            .unwrap();
 
-                let parent_children
-                    = parent_mut.children_mut();
+                        let parent_children
+                            = parent_mut.children_mut();
 
-                parent_children
-                    .insert(child_pos + 1, new_node.into_cell(latch_type));
+                        parent_children
+                            .insert(child_pos + 1, new_node.into_cell(latch_type));
 
-                mem::drop(mem::replace(parent_children.get_unchecked_mut(child_pos),
-                                       new_node_from.into_cell(latch_type)));
+                        mem::drop(mem::replace(parent_children.get_unchecked_mut(child_pos),
+                                               new_node_from.into_cell(latch_type)));
 
-                parent_mut
-                    .keys_mut()
-                    .insert(child_pos, k3);
+                        parent_mut
+                            .keys_mut()
+                            .insert(child_pos, k3);
+                    }
+                    SplitType::FilterDeletes => {
+                        records.as_records_mut().clear();
+                        records.as_records_mut().extend(records_filtered);
+                    }
+                }
             }
         }
     }
