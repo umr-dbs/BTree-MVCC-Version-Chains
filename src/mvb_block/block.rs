@@ -36,8 +36,8 @@ impl<const FAN_OUT: usize,
 }
 
 pub(crate) enum SplitType {
-    Split,
-    FilterDeletes
+    SplitAndFilter,
+    SplitNormal
 }
 
 impl<const FAN_OUT: usize,
@@ -65,7 +65,7 @@ impl<const FAN_OUT: usize,
 
     pub(crate) fn split_type(&self) -> SplitType {
         if self.is_directory() {
-            return SplitType::Split
+            return SplitType::SplitNormal
         }
 
         let count_deleted = self
@@ -75,10 +75,10 @@ impl<const FAN_OUT: usize,
             .count();
 
         if count_deleted < (NUM_RECORDS as f64 * 0.4f64).ceil() as _ {
-            SplitType::Split
+            SplitType::SplitAndFilter
         }
         else {
-            SplitType::FilterDeletes
+            SplitType::SplitNormal
         }
     }
 }

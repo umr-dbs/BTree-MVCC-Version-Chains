@@ -67,7 +67,7 @@ pub(crate) fn main_load(parms: Vec<String>) {
                 - Skew = {skew}\n\
                 - Range = {range}\n\
                 - Version Index = {v_index}\n\
-                - GC = {gc}\n",
+                - GC = {gc}",
                  num_cpus::get_physical(),
                  num_cpus::get(),
                  if concurrent { format!("Continuous\n- OLTP Threads = {scans_per_thread}") } else { format!("{scans_per_thread}") });
@@ -167,7 +167,7 @@ pub(crate) fn main_load(parms: Vec<String>) {
             let alloc_blocks
                 = index.block_manager.alloc_count.load(SeqCst);
 
-            let reuse_blocks = 0; // TODO
+            let reuse_blocks = 0;
 
             oltp_file.write_all(format!(",\
             {alloc_blocks},\
@@ -210,7 +210,7 @@ pub(crate) fn main_load(parms: Vec<String>) {
             let alloc_blocks
                 = index.block_manager.alloc_count.load(SeqCst);
 
-            let reuse_blocks = 0; // TODO
+            let reuse_blocks = 0;
 
             oltp_file.write_all(format!("\
             false,\
