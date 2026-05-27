@@ -453,10 +453,10 @@ pub enum SmartGuard<'a, E: Default> {
     RwReader(RwLockReadGuard<'a, RawRwLock, ()>, *const E),
     RwWriter(RwLockWriteGuard<'a, RawRwLock, ()>, *mut E),
     MutExclusive(MutexGuard<'a, RawMutex, ()>, *mut E),
-    OLCReader(Option<(SmartCell<E>, LatchVersion)>),
+    OLCReader(Option<(&'a SmartCell<E>, LatchVersion)>),
     OLCWriter(SmartCell<E>, LatchVersion),
-    OLCReaderPin(SmartCell<E>, LatchVersion),
-    OLCAppendPin(SmartCell<E>, LatchVersion),
+    OLCReaderPin(&'a SmartCell<E>, LatchVersion),
+    OLCAppendPin(&'a SmartCell<E>, LatchVersion),
     HybridRwReader(RwLockReadGuard<'a, RawRwLock, ()>, &'a OptCell<E>, LatchVersion),
     HybridRwWriter(RwLockWriteGuard<'a, RawRwLock, ()>, &'a OptCell<E>, LatchVersion),
 }
@@ -546,7 +546,7 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
                     LightWeightHybridCell(opt) => {
                         match opt.pin_lock() {
                             Ok(pin_latch) => {
-                                let append_pin = OLCAppendPin(transmute_copy(cell), pin_latch);
+                                let append_pin = OLCAppendPin(*cell, pin_latch);
                                 ptr::write(self, append_pin);
                                 true
                             }
@@ -557,8 +557,7 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
                 }
             }
             OLCReaderPin(cell, pin_latch) => unsafe {
-                let writer = OLCAppendPin(
-                    transmute_copy(cell), *pin_latch);
+                let writer = OLCAppendPin(*cell, *pin_latch);
 
                 ptr::write(self, writer);
                 true
@@ -607,7 +606,7 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
                     OLCCell(opt) | LightWeightHybridCell(opt) => if let Some(write_latch)
                         = opt.write_lock(*read_latch)
                     {
-                        let writer = OLCWriter(transmute_copy(cell), write_latch);
+                        let writer = OLCWriter((*cell).clone(), write_latch);
                         ptr::write(self, writer);
                         return true;
                     },
@@ -662,7 +661,7 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
             OLCReaderPin(cell, pin_latch) => unsafe {
                 if let LightWeightHybridCell(opt) = cell.0.as_ref() {
                     let writer = OLCWriter(
-                        transmute_copy(cell),
+                        (*cell).clone(),
                         opt.pin_write_lock(*pin_latch));
 
                     ptr::write(self, writer);
@@ -852,11 +851,11 @@ impl<E: Default> SmartCell<E> {
         match self.0.deref() {
             OLCCell(opt) |
             HybridCell(opt, ..) |
-            LightWeightHybridCell(opt) => {
+            LightWeightHybridCell(opt) => unsafe {
                 let (success, read)
                     = opt.read_lock();
 
-                OLCReader(success.then(|| (self.clone(), read)))
+                OLCReader(success.then(|| (transmute(self), read)))
             }
             ExclusiveCell(mutex, ptr) => unsafe {
                 MutExclusive(transmute(mutex.lock()),
@@ -872,12 +871,14 @@ impl<E: Default> SmartCell<E> {
     #[inline(always)]
     pub fn borrow_pin(&self) -> SmartGuard<'static, E> {
         match self.0.deref() {
-            LightWeightHybridCell(opt) => match opt.pin_lock() {
-                Ok(pin_latch) =>
-                    OLCReaderPin(self.clone(), pin_latch),
-                Err((true, read_latch)) =>
-                    OLCReader(Some((self.clone(), read_latch))),
-                _ => OLCReader(None)
+            LightWeightHybridCell(opt) => unsafe {
+                match opt.pin_lock() {
+                    Ok(pin_latch) =>
+                        OLCReaderPin(transmute(self), pin_latch),
+                    Err((true, read_latch)) =>
+                        OLCReader(Some((transmute(self), read_latch))),
+                    _ => OLCReader(None)
+                }
             },
             _ => OLCReader(None)
         }
