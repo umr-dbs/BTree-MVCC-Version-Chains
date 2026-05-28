@@ -57,6 +57,9 @@ pub(crate) fn main_load(parms: Vec<String>) {
         let update_in_place
             = parms[10].parse::<bool>().unwrap_or(false);
 
+        let init_keys
+            = parms[11].parse::<usize>().unwrap_or(100_000);
+
         let index
             = Arc::new(new_INDEX(OLC, v_index, gc));
 
@@ -104,6 +107,11 @@ pub(crate) fn main_load(parms: Vec<String>) {
             let query_file_name_clone = query_file_name.clone();
             let mut oltp = load_query_into_memory(
                 query_file_name_clone.as_str());
+
+            // TODO: Explicit for Experiment
+            oltp.drain(0..init_keys).for_each(|i| {
+                let _ = index.dispatch(i);
+            });
 
             let oltp_threads = scans_per_thread;
             let slice = oltp.len() / oltp_threads;
@@ -183,8 +191,13 @@ pub(crate) fn main_load(parms: Vec<String>) {
 
             println!("###### End Command: {} ######", parms.iter().skip(1).join(" "));
         } else {
-            let oltp_tx_buff = load_query_into_memory(
+            let mut oltp_tx_buff = load_query_into_memory(
                 query_file_name.as_str());
+
+            // TODO: Explicit for Experiment
+            oltp_tx_buff.drain(0..init_keys).for_each(|i| {
+                let _ = index.dispatch(i);
+            });
 
             let num = oltp_tx_buff.len();
             let start_oltp_time = Instant::now();
@@ -308,24 +321,23 @@ fn olap_tests(index: Arc<MVBTree>,
             let mut results = vec![];
             let mut tx_c = 0;
             while tx_c < tx_per_thread {
-                let mut key_max = 1000;
-                let mut key_min= Key::MIN;
-                if let Either::Left(range) = range {
-                    key_min = 0;
-                    key_max = range;
-                }
-                else if let Either::Right(ref range) = range {
-                    key_max = range.load(Acquire);
-                    key_min = key_max.checked_sub(1000).unwrap_or(0);
-                }
+                let key_min = 0;
+                let key_max = Key::MAX;
 
-                let mut current_si
+                let current_si = index.current_version_for_reader();
+                let si = if fixed_si {
+                    current_si
+                } else {
+                    rand::random_range(1..=current_si)
+                };
+
+                let current_si
                     = index.current_version_for_reader();
 
-                while current_si == 1 {
-                    yield_now();
-                    current_si = index.current_version_for_reader(); // todo: check reader clock
-                }
+                // while current_si == 1 {
+                //     yield_now();
+                //     current_si = index.current_version_for_reader(); // todo: check reader clock
+                // }
 
                 let si = if fixed_si {
                     current_si
