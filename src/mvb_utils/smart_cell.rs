@@ -163,7 +163,7 @@ impl<E: Default> OptCell<E> {
 
     #[inline(always)]
     pub fn load_version(&self) -> LatchVersion {
-        self.cell_version.load(Acquire)
+        self.cell_version.load(Relaxed)
     }
 
     #[inline(always)]
@@ -233,7 +233,7 @@ impl<E: Default> OptCell<E> {
     #[inline(always)]
     pub fn is_read_valid(&self, read_latch: LatchVersion) -> IsRead {
         let load_version
-            = self.load_version();
+            = self.cell_version.load(Acquire);
 
         read_latch == load_version & !PIN_FLAG_VERSION && load_version & WRITE_OBSOLETE_FLAG_VERSION == 0
     }
@@ -243,7 +243,7 @@ impl<E: Default> OptCell<E> {
         let pin_write
             = WRITE_FLAG_VERSION | (read_version_pin & !PIN_FLAG_VERSION);
 
-        self.cell_version.store(pin_write, Relaxed);
+        self.cell_version.store(pin_write, Release);
 
         pin_write
     }
@@ -308,20 +308,20 @@ impl<E: Default> OptCell<E> {
         self.cell_version.store(OBSOLETE_FLAG_VERSION | latch, Release)
     }
 
-    #[inline(always)]
-    pub fn is_obsolete(&self) -> bool {
-        self.load_version() == OBSOLETE_FLAG_VERSION
-    }
+    // #[inline(always)]
+    // pub fn is_obsolete(&self) -> bool {
+    //     self.load_version() == OBSOLETE_FLAG_VERSION
+    // }
 
-    #[inline(always)]
-    pub fn is_write(&self) -> bool {
-        self.load_version() & WRITE_FLAG_VERSION == WRITE_FLAG_VERSION
-    }
+    // #[inline(always)]
+    // pub fn is_write(&self) -> bool {
+    //     self.load_version() & WRITE_FLAG_VERSION == WRITE_FLAG_VERSION
+    // }
 
     #[inline(always)]
     pub fn is_read_not_obsolete(&self) -> bool {
         let version 
-            = self.load_version();
+            = self.cell_version.load(Acquire);
         
         version & WRITE_OBSOLETE_FLAG_VERSION == 0
     }
@@ -333,7 +333,7 @@ impl<E: Default> OptCell<E> {
         }
 
         let read_version
-            = self.load_version();
+            = self.cell_version.load(Acquire);
 
         (read_version & WRITE_OBSOLETE_FLAG_VERSION == 0, read_version)
     }
@@ -709,6 +709,17 @@ impl<'a, E: Default + 'static> SmartGuard<'_, E> {
             HybridRwReader(.., opt, latch) =>
                 opt.is_read_valid(*latch),
             //  | HybridRwWriter(.., opt, latch)
+            _ => true
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_valid_local(&self) -> bool {
+        match self {
+            OLCReader(Some((.., latch))) |
+            HybridRwReader(.., latch)=>
+                *latch & WRITE_OBSOLETE_FLAG_VERSION == 0,
+            OLCReader(None) => false,
             _ => true
         }
     }

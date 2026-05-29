@@ -84,7 +84,7 @@ impl LevelExtras for Level {
     }
 }
 
-#[derive(Serialize, Deserialize, Default, Clone)]
+#[derive(Serialize, Deserialize, Default, Clone, Copy)]
 pub enum LockingStrategy {
     #[default]
     MonoWriter,

@@ -155,4 +155,10 @@ impl<const FAN_OUT: usize,
             std::slice::from_raw_parts(self.children_array.as_ptr() as _, self.children_len())
         }
     }
+
+    pub fn set_key_len(&self, len: usize) {
+        unsafe {
+            *(self.key_array.as_ptr() as *mut ObjectCount) = len as ObjectCount;
+        }
+    }
 }

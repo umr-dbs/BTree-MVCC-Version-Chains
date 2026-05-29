@@ -1,6 +1,6 @@
 [package]
-name = "MVBTree"
-version = "0.0.33"
+name = "BTreeVersionChains"
+version = "0.0.34"
 edition = "2021"
 authors = ["Amir Tonta <amir.tonta@mathematik.uni-marburg.de>"]
 description = "Experimental Concurrency Control CRUD MVB+Tree Implementation"
@@ -39,3 +39,4 @@ libc = "0.2.180"
 sysinfo = "0.37.0"
 raw-cpuid = "11.5.0"
 num_cpus = "1.17.0"
+jemallocator = "0.5.4"

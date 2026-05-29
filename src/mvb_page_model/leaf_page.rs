@@ -65,6 +65,12 @@ impl<const NUM_RECORDS: usize,
     }
 
     #[inline(always)]
+    pub fn set_len(&self, len: usize) {
+        *self.records_len.get_mut() = len as _
+    }
+
+
+    #[inline(always)]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }

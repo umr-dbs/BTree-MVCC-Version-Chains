@@ -2,7 +2,7 @@ use std::fmt::Display;
 use std::hash::Hash;
 use std::ops::Deref;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::atomic::Ordering::{Relaxed, SeqCst};
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release, SeqCst};
 use std::sync::OnceLock;
 use std::thread::{spawn, yield_now, JoinHandle};
 use parking_lot::Mutex;
@@ -166,7 +166,7 @@ pub(crate) fn committed_read(clock_time: Version) -> Version {
     else {
         let agg_min_commit = committed()
             .iter()
-            .take(THREAD_ID.load(Relaxed))
+            .take(THREAD_ID.load(Acquire))
             .fold(clock_time,
                   |acc, l_commit| acc.min(l_commit.load(Relaxed)));
 
@@ -187,8 +187,8 @@ fn thread_local_commit_inactive(id: usize) {
 fn thread_local_commit(id: usize, version: Version) {
     unsafe {
         debug_assert!(committed().len() > id, "committed.len()={}, id={}", committed().len(), id);
-        committed().get_unchecked(id).store(version, Relaxed);
-        GLOBAL_DIRTY.store(true, Relaxed);
+        committed().get_unchecked(id).store(version, Release);
+        GLOBAL_DIRTY.store(true, Release);
     }
 }
 

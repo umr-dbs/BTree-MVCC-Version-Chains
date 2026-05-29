@@ -2,7 +2,9 @@ use std::collections::VecDeque;
 use std::hash::Hash;
 use std::fmt::Display;
 use std::{mem, ptr};
-use itertools::Itertools;
+use std::mem::ManuallyDrop;
+use std::sync::Arc;
+use itertools::{Either, Itertools};
 use crate::mvb_locking::locking_strategy::LockingStrategy;
 use crate::mvb_page_model::{Attempts, BlockRef, Height, Level};
 use crate::mvb_block::block::{Block, BlockGuard, SplitType};
@@ -184,16 +186,17 @@ impl<const FAN_OUT: usize,
                                          -> Result<(BlockGuard<FAN_OUT, NUM_RECORDS, Key, Payload>, Height), (LockLevel, Attempts)>
     {
         let root
-            = self.root.get();
+            = self.root.get_mut();
 
+        let height = root.height();
         let mut root_guard =
             self.apply_for_ref(INIT_TREE_HEIGHT,
                                lock_level,
                                attempt,
-                               root.height(),
+                               height,
                                &root.block);
 
-        if !root_guard.is_valid() {
+        if !root_guard.is_valid_local() {
             mem::drop(root_guard);
 
             return Err((lock_level, attempt + 1));
@@ -219,11 +222,11 @@ impl<const FAN_OUT: usize,
             // if !root_guard.deref().unwrap().is_leaf() {
             //     root_guard.downgrade(); // allow possible concurrency, instead of definitive lock
             // }
-            return Ok((root_guard, root.height()));
+            return Ok((root_guard, height));
         }
 
         if !has_overflow_root {
-            return Ok((root_guard, root.height()));
+            return Ok((root_guard, height));
         }
 
         let root_ref
@@ -233,7 +236,7 @@ impl<const FAN_OUT: usize,
             = self.locking_strategy.latch_type();
 
         let n_height
-            = root.height() + 1;
+            = height + 1;
 
         match root_ref.as_mut() {
             Node::Index(index_page) => unsafe {
@@ -244,7 +247,7 @@ impl<const FAN_OUT: usize,
                 let k3 = *keys.get_unchecked(keys_mid);
 
                 let index_block
-                    = self.block_manager.new_empty_index_block();
+                    = root.block.unsafe_borrow_mut();
 
                 let new_node_right =
                     self.block_manager.new_empty_index_block();
@@ -252,33 +255,47 @@ impl<const FAN_OUT: usize,
                 let new_root_left
                     = self.block_manager.new_empty_index_block();
 
-                new_node_right
-                    .children_mut()
-                    .extend_from_slice(children.get_unchecked(keys_mid + 1..));
+                let right_children
+                    = children.get_unchecked(keys_mid + 1..);
 
-                new_node_right
-                    .keys_mut()
-                    .extend_from_slice(keys.get_unchecked(keys_mid + 1..));
+                new_node_right.children_mut().ptr.copy_from_nonoverlapping(
+                    right_children.as_ptr(),
+                    right_children.len());
 
-                new_root_left
-                    .children_mut()
-                    .extend_from_slice(children.get_unchecked(..=keys_mid));
+                let right_keys
+                    = keys.get_unchecked(keys_mid + 1..);
 
-                new_root_left
-                    .keys_mut()
-                    .extend_from_slice(keys.get_unchecked(..keys_mid));
+                new_node_right.keys_mut().ptr.copy_from_nonoverlapping(
+                    right_keys.as_ptr(),
+                    right_keys.len());
 
-                index_block.children_mut().extend([
-                    new_root_left.into_cell(latch_type),
-                    new_node_right.into_cell(latch_type)
-                ]);
+                new_node_right.set_key_len(right_keys.len());
 
-                index_block.keys_mut()
-                    .push(k3);
+                let left_children
+                    = children.get_unchecked(..=keys_mid);
 
-                self.set_new_root(
-                    index_block,
-                    n_height);
+                new_root_left.children_mut().ptr.copy_from_nonoverlapping(
+                    left_children.as_ptr(),
+                    left_children.len());
+
+                let left_keys
+                    = keys.get_unchecked(..keys_mid);
+
+                new_root_left.keys_mut().ptr.copy_from_nonoverlapping(
+                    left_keys.as_ptr(),
+                    left_keys.len());
+
+                new_root_left.set_key_len(left_keys.len());
+
+                index_block.children_mut().ptr
+                    .write(new_root_left.into_cell(latch_type));
+
+                index_block.children_mut().ptr
+                    .add(1)
+                    .write(new_node_right.into_cell(latch_type));
+
+                index_block.keys_mut().ptr.write(k3);
+                index_block.set_key_len(1);
             }
             Node::Leaf(records) => unsafe {
                 let split_type = if self.gc {
@@ -288,24 +305,22 @@ impl<const FAN_OUT: usize,
                     SplitType::SplitNormal
                 };
 
-                let (records_filtered, dealloc) = match split_type {
-                    SplitType::SplitAndFilter => {
-                        let mut data = records
-                            .as_records()
-                            .iter()
-                            .filter_map(|r|
-                                r.is_live().then(|| r.clone()))
-                            .collect_vec();
+                if let SplitType::SplitAndFilter = split_type {
+                    let data = records
+                        .as_records()
+                        .iter()
+                        .filter(|r|
+                            r.is_live())
+                        .cloned()
+                        .collect::<Box<[_]>>();
 
-                        data.shrink_to_fit();
-                        let (ptr, len, _cap)
-                            = data.into_raw_parts();
+                    (records.record_data.as_mut_ptr() as *mut VersionedRecordPoint<_, _>)
+                        .copy_from_nonoverlapping(data.as_ptr(), data.len());
 
-                        (std::slice::from_raw_parts(ptr, len), true)
-                    },
-                    _ => (records.as_records(), false)
+                    records.set_len(data.len());
                 };
 
+                let records_filtered = records.as_records();
                 let records_mid
                     = records_filtered.len() / 2;
 
@@ -313,41 +328,38 @@ impl<const FAN_OUT: usize,
                     .get_unchecked(records_mid)
                     .key;
 
+                let new_root
+                    = self.block_manager.new_empty_index_block();
+
                 let new_node_right
                     = self.block_manager.new_empty_leaf();
 
                 let new_node_left
-                    = self.block_manager.new_empty_leaf();
+                    = root.block.unsafe_borrow_mut();
 
-                let new_root
-                    = self.block_manager.new_empty_index_block();
+                let right_records
+                    = records_filtered.get_unchecked(records_mid..);
 
-                new_node_right
-                    .records_mut()
-                    .extend_from_slice(records_filtered.get_unchecked(records_mid..));
+                new_node_right.records_mut().ptr.copy_from_nonoverlapping(
+                    right_records.as_ptr(),
+                    right_records.len());
 
-                new_node_left
-                    .records_mut()
-                    .extend_from_slice(records_filtered.get_unchecked(..records_mid));
+                new_node_right.set_key_len(right_records.len());
+                new_node_left.set_key_len(records_mid);
 
-                new_root.children_mut().extend([
-                    new_node_left.into_cell(latch_type),
-                    new_node_right.into_cell(latch_type)
-                ]);
+                new_root.children_mut().ptr.write(root.block.clone()); //must be clone; Why tho
+                // new_root.children_mut()
+                //     .ptr.write(
+                //     (&root.block as *const BlockRef<FAN_OUT, NUM_RECORDS, Key, Payload>)
+                //         .read_unaligned());
+                new_root.children_mut().ptr
+                    .add(1)
+                    .write(new_node_right.into_cell(latch_type));
 
-                new_root.keys_mut()
-                    .push(k3);
+                new_root.keys_mut().ptr.write(k3);
+                new_root.set_key_len(1);
 
-                self.set_new_root(
-                    new_root,
-                    n_height);
-
-                if dealloc {
-                    let _ = Vec::from_raw_parts(
-                        records_filtered.as_ptr() as *mut VersionedRecordPoint<Key,Payload>,
-                        records_filtered.len(),
-                        records_filtered.len());
-                }
+                ptr::write(&mut root.block, new_root.into_cell(latch_type));
             }
         }
 
@@ -413,7 +425,7 @@ impl<const FAN_OUT: usize,
             .enumerate()
             .filter(|(index, ..)| *index != child_pos)
             .map(|(index, (block, key))|
-                (index, block.clone(), *key))
+                (index, block, *key))
             // .sorted_by_key(|(.., key)| *key)
             .collect_vec();
 
@@ -734,36 +746,34 @@ impl<const FAN_OUT: usize,
                     = self.block_manager.new_empty_index_block();
 
                 let new_node_from
-                    = self.block_manager.new_empty_index_block();
+                    = from_guard.deref_mut().unwrap();
 
-                new_node_right
-                    .children_mut()
-                    .extend_from_slice(children.get_unchecked(keys_mid + 1..));
+                let right_children
+                    = children.get_unchecked(keys_mid + 1..);
 
-                new_node_right
-                    .keys_mut()
-                    .extend_from_slice(keys.get_unchecked(keys_mid + 1..));
+                new_node_right.children_mut().ptr.copy_from_nonoverlapping(
+                    right_children.as_ptr(),
+                    right_children.len());
 
-                new_node_from
-                    .children_mut()
-                    .extend_from_slice(children.get_unchecked(..=keys_mid));
+                let right_keys
+                    = keys.get_unchecked(keys_mid + 1..);
 
-                new_node_from
-                    .keys_mut()
-                    .extend_from_slice(keys.get_unchecked(..keys_mid));
+                new_node_right.keys_mut().ptr.copy_from_nonoverlapping(
+                    right_keys.as_ptr(),
+                    right_keys.len());
+
+                new_node_right.set_key_len(right_keys.len());
+                new_node_from.set_key_len(keys_mid);
 
                 let parent_mut = parent_guard
                     .deref_mut()
                     .unwrap();
 
-                let mut parent_children
+                let parent_children
                     = parent_mut.children_mut();
 
                 parent_children
                     .insert(child_pos + 1, new_node_right.into_cell(latch_type));
-
-                mem::drop(mem::replace(parent_children.get_unchecked_mut(child_pos),
-                                       new_node_from.into_cell(latch_type)));
 
                 parent_mut
                     .keys_mut()
@@ -776,24 +786,23 @@ impl<const FAN_OUT: usize,
                 else {
                     SplitType::SplitNormal
                 };
-                let (records_filtered, dealloc) = match split_type {
-                    SplitType::SplitAndFilter => {
-                        let mut data = records
-                            .as_records()
-                            .iter()
-                            .filter_map(|r|
-                                r.is_live().then(|| r.clone()))
-                            .collect_vec();
 
-                        data.shrink_to_fit();
-                        let (ptr, len, _cap)
-                            = data.into_raw_parts();
+                if let SplitType::SplitAndFilter = split_type {
+                    let data = records
+                        .as_records()
+                        .iter()
+                        .filter(|r|
+                            r.is_live())
+                        .cloned()
+                        .collect::<Box<[_]>>();
 
-                        (std::slice::from_raw_parts(ptr, len), true)
-                    },
-                    _ => (records.as_records(), false)
+                    (records.record_data.as_mut_ptr() as *mut VersionedRecordPoint<_, _>)
+                        .copy_from_nonoverlapping(data.as_ptr(), data.len());
+
+                    records.set_len(data.len());
                 };
 
+                let records_filtered = records.as_records();
                 let records_mid = records_filtered.len() / 2;
                 let k3 = records_filtered
                     .get_unchecked(records_mid)
@@ -803,15 +812,17 @@ impl<const FAN_OUT: usize,
                     = self.block_manager.new_empty_leaf();
 
                 let new_node_from
-                    = self.block_manager.new_empty_leaf();
+                    = from_guard.deref_mut().unwrap();
 
-                new_node
-                    .records_mut()
-                    .extend_from_slice(records_filtered.get_unchecked(records_mid..));
+                let right_records
+                    = records_filtered.get_unchecked(records_mid..);
 
-                new_node_from
-                    .records_mut()
-                    .extend_from_slice(records_filtered.get_unchecked(..records_mid));
+                new_node.records_mut().ptr.copy_from_nonoverlapping(
+                    right_records.as_ptr(),
+                    right_records.len());
+
+                new_node.set_key_len(right_records.len());
+                new_node_from.set_key_len(records_mid);
 
                 let parent_mut = parent_guard
                     .deref_mut()
@@ -823,18 +834,9 @@ impl<const FAN_OUT: usize,
                 parent_children
                     .insert(child_pos + 1, new_node.into_cell(latch_type));
 
-                mem::drop(mem::replace(parent_children.get_unchecked_mut(child_pos),
-                                       new_node_from.into_cell(latch_type)));
                 parent_mut
                     .keys_mut()
                     .insert(child_pos, k3);
-
-                if dealloc {
-                    let _ = Vec::from_raw_parts(
-                        records_filtered.as_ptr() as *mut VersionedRecordPoint<Key, Payload>,
-                        records_filtered.len(),
-                        records_filtered.len());
-                }
             }
         }
     }
@@ -852,8 +854,8 @@ impl<const FAN_OUT: usize,
             attempt
         ) = self.retrieve_root(lock_level, attempt);
 
-        let mut _curr_block
-            = self.root.block();
+        // let mut _curr_block
+        //     = self.root.block();
 
         // if unsafe { ptr::read_unaligned(&key as *const _ as *const u64) } == 23 {
         //     Self::log_console(current_guard.deref().unwrap(), 0);
@@ -950,7 +952,7 @@ impl<const FAN_OUT: usize,
                         }
 
                         current_guard = next_guard;
-                        _curr_block = next_node;
+                        // _curr_block = next_node;
                     }
                 }
                 _ => return if current_guard.upgrade_write_lock() {

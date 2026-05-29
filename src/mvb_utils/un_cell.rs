@@ -1,7 +1,10 @@
 use std::cell::UnsafeCell;
 use std::fmt::{Display, Formatter};
+use std::hash::Hash;
 use std::mem;
+use std::mem::ManuallyDrop;
 use std::ops::{Deref, DerefMut};
+use crate::mvb_record_model::v_record_point::VersionedRecordPoint;
 
 /**
  *
@@ -11,6 +14,65 @@ use std::ops::{Deref, DerefMut};
  * @Author: Amir El-Shaikh
  *
  */
+// pub enum MyEither<
+//     'a,
+//     Key: Default + Ord + Copy + Hash + Sync + Display + 'static,
+//     Payload: Default + Clone + Send + Sync + Display + 'static>
+// {
+//     Filtered(Box<[&'a VersionedRecordPoint<Key, Payload>]>),
+//     Records(&'a [VersionedRecordPoint<Key, Payload>])
+// }
+//
+// impl<'a,
+//     Key: Default + Ord + Copy + Hash + Sync + Display + 'static,
+//     Payload: Default + Clone + Send + Sync + Display + 'static
+// > MyEither<'a, Key, Payload>
+// {
+//     #[inline(always)]
+//     pub(crate) const fn new_filtered(filtered: Box<[&'a VersionedRecordPoint<Key, Payload>]>) -> Self {
+//         Self::Filtered(filtered)
+//     }
+//
+//     #[inline(always)]
+//     pub(crate) const fn new_records(records: &'a [VersionedRecordPoint<Key, Payload>]) -> Self {
+//         Self::Records(records)
+//     }
+//
+//     #[inline(always)]
+//     pub const fn len(&self) -> usize {
+//         match self {
+//             Self::Filtered(f) => f.len(),
+//             Self::Records(r) => r.len(),
+//         }
+//     }
+//
+//     pub(crate) fn get(&self, index: usize) -> &VersionedRecordPoint<Key, Payload> {
+//         match self {
+//             Self::Filtered(f) => unsafe {
+//                 f.get_unchecked(index)
+//             }
+//             Self::Records(r) => unsafe {
+//                 r.get_unchecked(index)
+//             }
+//         }
+//     }
+//
+//     pub(crate) fn get_range_uninclusive(&self, from: usize, to: usize)
+//         -> &[VersionedRecordPoint<Key, Payload>]
+//     {
+//         match self {
+//             Self::Filtered(f) => unsafe {
+//                 f.get_unchecked(from..to)
+//             }
+//             Self::Records(r) => unsafe {
+//                 r.get_unchecked(index)
+//             }
+//         }
+//     }
+//
+// }
+
+
 // Copied from ChronicleDB and adapted.
 #[derive(Default)]
 pub struct UnCell<E: Default> {

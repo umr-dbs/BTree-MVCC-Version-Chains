@@ -15,6 +15,10 @@ mod mvb_utils;
 mod n_test;
 mod mvb_version_index;
 
+use jemallocator::Jemalloc;
+
+#[global_allocator]
+static GLOBAL: Jemalloc = Jemalloc;
 /*
 
 thread '<unnamed>' (18042) panicked at src/mvb_crud_model/query.rs:370:49:

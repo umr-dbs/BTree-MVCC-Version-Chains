@@ -189,6 +189,14 @@ impl<const FAN_OUT: usize,
     }
 
     #[inline(always)]
+    pub(crate) fn set_key_len(&self, len: usize) {
+        match self {
+            Node::Index(index_page) => index_page.set_key_len(len),
+            Node::Leaf(leaf_page) => leaf_page.set_len(len),
+        }   
+    }
+
+    #[inline(always)]
     pub const fn is_directory(&self) -> bool {
         !self.is_leaf()
     }
