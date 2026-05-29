@@ -1,13 +1,17 @@
 use std::cell::Cell;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::mem::ManuallyDrop;
+use std::ptr;
 use std::sync::{atomic, Arc};
 use std::sync::atomic::fence;
 use std::sync::atomic::Ordering::Release;
 use arc_swap::ArcSwap;
 use CCBPlusTree::record_model::record_point::RecordPoint;
+use itertools::Itertools;
 use crate::mvb_block::block::BlockGuard;
 use crate::mvb_crud_model::crud_api::NodeVisits;
+use crate::mvb_record_model::v_record_point::VersionedRecordPoint;
 use crate::mvb_record_model::Version;
 use crate::mvb_tree::bplus_tree::MVBPlusTree;
 use crate::mvb_utils::interval::Interval;
@@ -344,15 +348,27 @@ impl<const FAN_OUT: usize,
                     continue;
                 }
 
-                let leaf_copy = unsafe { leaf_guard
-                    .deref_unsafe() }
-                    .unwrap()
-                    .as_records()
-                    .to_vec();
+                let recs_slice = unsafe {
+                    leaf_guard.deref_unsafe() }.unwrap().as_records();
+                let start
+                    = recs_slice.partition_point(|r| r.key().lt(&interval.lower()));
+                let end
+                    = recs_slice.partition_point(|r| r.key().le(&interval.upper()));
 
+                let in_range
+                    = &recs_slice[start..end];
+
+                let mut snapshot: Vec<ManuallyDrop<VersionedRecordPoint<Key, Payload>>>
+                    = Vec::with_capacity(in_range.len());
+
+                unsafe { ptr::copy_nonoverlapping(
+                    in_range.as_ptr() as *const ManuallyDrop<VersionedRecordPoint<Key, Payload>>,
+                    snapshot.as_mut_ptr(),
+                    in_range.len()) };
+                unsafe { snapshot.set_len(in_range.len()) };
                 leaf_guard.downgrade();
-                
-                match leaf_copy
+
+                match snapshot
                     .iter()
                     .skip_while(|record|
                         !interval.contains(record.key))

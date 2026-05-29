@@ -2,6 +2,7 @@ use std::collections::VecDeque;
 use std::fmt::Display;
 use std::hash::Hash;
 use std::mem;
+use std::mem::ManuallyDrop;
 use std::ops::Deref;
 use CCBPlusTree::record_model::record_point::RecordPoint;
 use crate::mvb_page_model::{Attempts, Height, Level};
@@ -10,6 +11,7 @@ use crate::mvb_crud_model::crud_api::{CRUDDispatcher, NodeVisits};
 use crate::mvb_page_model::node::Node;
 use crate::mvb_crud_model::crud_operation::CRUDOperation;
 use crate::mvb_crud_model::crud_operation_result::CRUDOperationResult;
+use crate::mvb_record_model::v_record_point::VersionedRecordPoint;
 use crate::mvb_record_model::Version;
 use crate::mvb_tree::bplus_tree::{MVBPlusTree, INIT_TREE_HEIGHT, LockLevel, MAX_TREE_HEIGHT};
 use crate::mvb_utils::interval::Interval;
@@ -233,27 +235,58 @@ impl<const FAN_OUT: usize,
                 continue;
             }
 
-            let copy_recs = unsafe {
-                leaf_guard.deref_unsafe().unwrap().as_records().to_vec()
+            let result = unsafe {
+                let recs_slice = leaf_guard.deref_unsafe().unwrap().as_records();
+
+                // O(log n) range location under the latch.
+                let start = recs_slice.partition_point(|r| r.key().lt(&key_interval.lower()));
+                let end   = recs_slice.partition_point(|r| r.key().le(&key_interval.upper()));
+                let in_range = &recs_slice[start..end];
+
+                // Shallow byte-copy of only the in-range records.
+                // ManuallyDrop ensures the snapshot's drop won't deep-free the chains
+                // (which are still owned by the leaf).
+                let mut snapshot: Vec<ManuallyDrop<VersionedRecordPoint<Key, Payload>>>
+                    = Vec::with_capacity(in_range.len());
+                std::ptr::copy_nonoverlapping(
+                    in_range.as_ptr() as *const ManuallyDrop<VersionedRecordPoint<Key, Payload>>,
+                    snapshot.as_mut_ptr(),
+                    in_range.len(),
+                );
+                snapshot.set_len(in_range.len());
+
+                leaf_guard.downgrade();
+                path.push((fence, leaf_guard));
+
+                snapshot.iter()
+                    .filter_map(|r| r.find(version)
+                        .map(|v_entry| RecordPoint::new(r.key, v_entry.payload)))
+                    .collect()
             };
 
-            leaf_guard.downgrade();
-            path.push((fence, leaf_guard));
+            return (node_visits, result);
 
-            return (node_visits, copy_recs
-                .iter()
-                .into_iter()
-                .skip_while(|v_record|
-                    v_record.key().lt(&key_interval.lower()))
-                .take_while(|v_record|
-                    v_record.key().le(&key_interval.upper()))
-                .filter_map(|v_record|
-                    match v_record.find(version) {
-                        Some(v_entry) =>
-                            Some(RecordPoint::new(v_record.key, v_entry.payload)),
-                        _ => None
-                    })
-                .collect())
+            // let copy_recs = unsafe {
+            //     leaf_guard.deref_unsafe().unwrap().as_records().to_vec()
+            // };
+            //
+            // leaf_guard.downgrade();
+            // path.push((fence, leaf_guard));
+            //
+            // return (node_visits, copy_recs
+            //     .iter()
+            //     .into_iter()
+            //     .skip_while(|v_record|
+            //         v_record.key().lt(&key_interval.lower()))
+            //     .take_while(|v_record|
+            //         v_record.key().le(&key_interval.upper()))
+            //     .filter_map(|v_record|
+            //         match v_record.find(version) {
+            //             Some(v_entry) =>
+            //                 Some(RecordPoint::new(v_record.key, v_entry.payload)),
+            //             _ => None
+            //         })
+            //     .collect())
         }
     }
 
@@ -381,6 +414,7 @@ impl<const FAN_OUT: usize,
                 Node::Index(index_page) => unsafe {
                     node_visits += 1;
 
+                    // let len_p = index_page.len();
                     let (child_pos, next_node)
                         = match index_page.keys().binary_search(&key)
                     {
@@ -417,7 +451,7 @@ impl<const FAN_OUT: usize,
                     
                     let has_underflow_next
                         = !append_op && self.has_underflow(next_guard_result.unwrap());
-                    
+                    // let next_len = next_guard_result.unwrap().len();
                     if has_overflow_next || has_underflow_next {
                         if !current_guard.upgrade_write_lock() || !next_guard.upgrade_write_lock() {
                             mem::drop(next_guard);
@@ -430,12 +464,26 @@ impl<const FAN_OUT: usize,
                             next_guard.upgrade_write_lock());
 
                         if has_overflow_next {
+                            // println!("do_overflow_correction: \
+                            // child_pos: {child_pos}, p_len: {}, c_len: {}",
+                            //          len_p,
+                            //          next_len);
+
                             self.do_overflow_correction(
                                 &mut current_guard,
                                 child_pos,
-                                next_guard)
+                                next_guard);
                         }
                         else {
+                            // if current_guard.deref_unsafe().unwrap().is_directory() &&
+                            //     current_guard.deref_unsafe().unwrap().keys().as_ptr() ==
+                            //     self.root.get().block().unsafe_borrow().keys().as_ptr() {
+                            //     println!("SAME ROOT PTR")
+                            // }
+                            // println!("do_underflow_correction: \
+                            // child_pos: {child_pos}, p_len: {}, c_len: {}",
+                            //          len_p,
+                            //          next_len);
                             match self.do_underflow_correction(
                                 &fence,
                                 curr_level,

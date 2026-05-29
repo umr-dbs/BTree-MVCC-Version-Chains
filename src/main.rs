@@ -16,6 +16,7 @@ mod n_test;
 mod mvb_version_index;
 
 use jemallocator::Jemalloc;
+use crate::mvb_crud_model::crud_operation::CRUDOperation;
 
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
@@ -26,7 +27,20 @@ unsafe precondition(s) violated: slice::get_unchecked requires that the index is
  */
 fn main() { 
     startup();
-    
+
+    // use std::collections::HashSet;
+    // let queries
+    //     = n_test::load_query_into_memory("1mio_inserts.dat");
+    // let mut inserts = 0usize;
+    // let mut unique_insert_keys = HashSet::new();
+    // for q in &queries {
+    //     if let CRUDOperation::Insert(k, _) = q {
+    //         inserts += 1;
+    //         unique_insert_keys.insert(*k);
+    //     }
+    // }
+    // panic!("Inserts: {}, unique keys: {}", inserts, unique_insert_keys.len());
+
     let args = env::args();
     let parms = args.collect_vec();
     if parms.len() > 1  {

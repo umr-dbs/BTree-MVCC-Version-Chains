@@ -1,9 +1,13 @@
 use std::cell::Cell;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::ptr::null_mut;
 use std::sync::Arc;
+use std::sync::atomic::AtomicPtr;
+use std::sync::atomic::Ordering::{Acquire, Relaxed, Release};
 use arc_swap::ArcSwap;
 use CCBPlusTree::record_model::record_point::RecordPoint;
+use itertools::Itertools;
 use crate::mvb_block::block::BlockGuard;
 use crate::mvb_crud_model::crud_api::NodeVisits;
 use crate::mvb_record_model::Version;
@@ -16,12 +20,6 @@ use crate::mvb_version_index::version_index::InsertVersion;
 
 type TowerLevel = usize;
 type FrugalPayload<Payload> = SafeCell<Option<Payload>>; // allows tombstones
-pub(crate) type FrugalNode<Payload> = Arc<FrugalNodeSt<Payload>>;
-// nullable ptr right away
-pub(crate) type FrugalNodeLink<Payload> = Option<FrugalNode<Payload>>;
-// wrap memory order for arc loaders and posters into a single indirection instead of 2
-type FrugalHeadNodeLink<Payload> = ArcSwap<FrugalNodeSt<Payload>>;
-
 const FLAT_LEVEL: TowerLevel = 0; // all linear links
 const SENTINEL_LEVEL: TowerLevel = TowerLevel::MAX; // head starter node
 
@@ -29,15 +27,50 @@ const SENTINEL_LEVEL: TowerLevel = TowerLevel::MAX; // head starter node
 pub struct AtomicFrugalList<
     Payload: Clone + Default + Display + Sync + Send + 'static>
 {
-    head: FrugalHeadNodeLink<Payload>, // We use handshake for arc (not refcount) loaders/posters
+    head: AtomicPtr<FrugalNodeSt<Payload>>, // We use handshake for arc (not refcount) loaders/posters
+}
+
+impl<Payload: Clone + Default + Display + Sync + Send + 'static> Drop for AtomicFrugalList<Payload> {
+    fn drop(&mut self) {
+        let mut p = self.head.load(Relaxed);
+        while !p.is_null() {
+            let boxed = unsafe { Box::from_raw(p) };
+            p = boxed.next.unwrap_or(null_mut());
+            drop(boxed);
+        }
+    }
 }
 
 impl<Payload: Clone + Default + Display + Sync + Send + 'static> Clone for AtomicFrugalList<Payload>
 {
     fn clone(&self) -> Self {
-        AtomicFrugalList {
-            head: ArcSwap::new(self.head.load().clone()),
+        let head = self.head.load(Acquire);
+        if head.is_null() {
+            return Self::default();
         }
+
+        // Walk raw chain head → tail to capture every node (including tombstones).
+        let mut items: Vec<(Option<Payload>, Version)> = Vec::new();
+        let mut p = head;
+        while !p.is_null() {
+            let node = unsafe { &*p };
+            items.push((node.payload.as_ref().clone(), node.insert_version));
+            p = node.next.unwrap_or(null_mut());
+        }
+
+        // The tail is the original sentinel — it's always live (constructed via `new`).
+        let (tail_payload, tail_version) = items.pop().unwrap();
+        let list = Self::new(
+            tail_payload.expect("sentinel must be live"),
+            tail_version,
+        );
+
+        // Replay oldest → newest. `push`/`append` prepend at head, so newest ends up there.
+        for (payload, version) in items.into_iter().rev() {
+            list.append(payload, version);
+        }
+
+        list
     }
 }
 
@@ -45,31 +78,47 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> Clone for Atomi
 pub struct FrugalNodeSt<
     Payload: Clone + Default + Display + Send + Sync + 'static>
 {
-    pub(crate) next: FrugalNodeLink<Payload>, // linear to prev versions
-    pub(crate) v_ridgy: FrugalNodeLink<Payload>, // skip to prev versions
+    pub(crate) next: Option<*mut FrugalNodeSt<Payload>>, // linear to prev versions
+    pub(crate) v_ridgy: Option<*mut FrugalNodeSt<Payload>>, // skip to prev versions
 
     pub(crate) payload: FrugalPayload<Payload>,
     pub(crate) insert_version: Version,
     pub(crate) level: Cell<TowerLevel>
 }
 
+unsafe impl<Payload: Clone + Default + Display + Send + Sync + 'static> Send for FrugalNodeSt<Payload> {}
+unsafe impl<Payload: Clone + Default + Display + Send + Sync + 'static> Sync for FrugalNodeSt<Payload> {
+
+}
 impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicFrugalList<Payload>
 {
     #[inline(always)]
+    fn load_read(&self) -> &FrugalNodeSt<Payload> {
+        unsafe {
+            &*self.head.load(Acquire)
+        }
+    }
+
+    #[inline(always)]
     pub fn newest_payload(&self) -> Payload {
-        self.head.load().payload.as_ref().clone().unwrap()
+        self.load_read().payload.as_ref().clone().unwrap()
     }
 
     #[inline(always)]
     pub fn is_live(&self) -> bool {
-        self.head.load().is_live()
+        self.load_read().is_live()
     }
 
     #[inline(always)]
     pub fn iter(&self) -> FrugalVersionIterator<Payload> {
-        FrugalVersionIterator {
-            current: Some(self.head.load_full())
-        }
+        let head = self.head.load(Acquire);
+        let current = if head.is_null() {
+            None
+        } else {
+            Some((head, unsafe { (*head).insert_version }))
+        };
+
+        FrugalVersionIterator { current }
     }
 
     #[inline(always)]
@@ -80,11 +129,11 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicFrugalLis
     #[inline(always)]
     pub fn new(payload: Payload, insert_version: InsertVersion) -> Self {
         Self {
-            head: ArcSwap::new(Arc::new(FrugalNodeSt::new(
+            head: AtomicPtr::new(Box::into_raw(Box::new(FrugalNodeSt::new(
                 Some(payload),
                 insert_version,
                 SENTINEL_LEVEL // acts as sentinel, i.e., any coin toss matches a v_ridgy eventually
-            )))
+            ))))
         }
     }
 
@@ -115,72 +164,75 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> AtomicFrugalLis
     #[inline(always)]
     fn append_next(&self, payload: Option<Payload>, insert_version: InsertVersion) {
         let head
-            = self.head.load_full();
+            = self.head.load(Acquire);
 
-        let new_head = Arc::new(FrugalNodeSt::new_with(
+        let new_head = Box::into_raw(Box::new(FrugalNodeSt::new_with(
             payload,
             insert_version,
             FLAT_LEVEL,
-            Some(head.clone()), // next
+            Some(head), // next
             Some(head) // v_ridgy
-        ));
+        )));
 
-        self.head.store(new_head);
-
+        self.head.store(new_head, Release);
     }
 
     #[inline(always)]
     fn append_tower(&self, payload: Option<Payload>, insert_version: InsertVersion) {
         let mut curr
-            = self.head.load_full();
+            = self.head.load(Acquire);
 
+        let mut curr_deref = unsafe { &*curr };
         let mut new_tower_node = FrugalNodeSt::new_with(
             payload,
             insert_version,
-            curr.level.get() + 1,
-            Some(curr.clone()), // next
+            curr_deref.level.get() + 1,
+            Some(curr), // next
             None // v_ridgy
         );
 
         let new_tower_level
             = new_tower_node.level.get();
 
-        while curr.level.get() < new_tower_level {
-            curr = match curr.v_ridgy.as_ref() {
-                Some(next) => next.clone(),
+        while curr_deref.level.get() < new_tower_level {
+            curr = match curr_deref.v_ridgy {
+                Some(next) => next,
                 None => unreachable!("weaving sentinel never seen!")
             };
+            curr_deref = unsafe { &*curr };
         }
 
         new_tower_node.v_ridgy = Some(curr);
-        self.head.store(Arc::new(new_tower_node));
+        self.head.store(Box::into_raw(Box::new(new_tower_node)), Release);
     }
 
     #[inline(always)]
-    pub fn find_from(mut curr: FrugalNode<Payload>,
-                     look_up_version: Version,
-                     allow_tombstone: bool) -> FrugalNodeLink<Payload>
+    pub fn find_from<'a>(curr: Option<*mut FrugalNodeSt<Payload>>,
+                         look_up_version: Version,
+                         allow_tombstone: bool) -> Option<&'a FrugalNodeSt<Payload>>
     {
-        while curr.level.get() < SENTINEL_LEVEL && curr.insert_version > look_up_version {
-            match curr.v_ridgy.as_ref() {
-                Some(v_ridgy) if v_ridgy.insert_version > look_up_version =>
-                    curr = v_ridgy.clone(),
-                _ => curr = curr.next.as_ref().unwrap().clone(),
-            }
+        let mut curr_deref = unsafe { &*curr? };
+        while curr_deref.level.get() < SENTINEL_LEVEL && curr_deref.insert_version > look_up_version {
+            curr_deref = match curr_deref.v_ridgy {
+                Some(v_ridgy) if unsafe { (*v_ridgy).insert_version } > look_up_version =>
+                    unsafe { &*v_ridgy },
+                _ => unsafe { &*curr_deref.next.unwrap() },
+            };
         }
 
-        (curr.insert_version <= look_up_version && (!allow_tombstone && curr.is_live() || allow_tombstone))
-            .then(move || curr)
+        (curr_deref.insert_version <= look_up_version
+            && (allow_tombstone || curr_deref.is_live()))
+            .then(move || curr_deref)
     }
 
     #[inline]
-    pub fn find(&self, look_up_version: Version) -> FrugalNodeLink<Payload> {
-        Self::find_from(self.head.load_full(), look_up_version, false)
+    pub fn find<'a>(&self, look_up_version: Version) -> Option<&'a FrugalNodeSt<Payload>> {
+        Self::find_from(Some(self.head.load(Acquire)), look_up_version, false)
     }
 
     #[inline]
-    pub fn find_any(&self, look_up_version: Version) -> FrugalNodeLink<Payload> {
-        Self::find_from(self.head.load_full(), look_up_version, true)
+    pub fn find_any<'a>(&self, look_up_version: Version) -> Option<&'a FrugalNodeSt<Payload>> {
+        Self::find_from(Some(self.head.load(Acquire)), look_up_version, true)
     }
 }
 
@@ -195,8 +247,8 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> FrugalNodeSt<Pa
     pub fn new_with(payload: Option<Payload>,
                     insert_version: InsertVersion,
                     level: TowerLevel,
-                    next: FrugalNodeLink<Payload>,
-                    v_ridgy: FrugalNodeLink<Payload>) -> Self
+                    next: Option<*mut FrugalNodeSt<Payload>>,
+                    v_ridgy: Option<*mut FrugalNodeSt<Payload>>) -> Self
     {
         Self {
             next,
@@ -217,35 +269,35 @@ impl<Payload: Clone + Default + Display + Sync + Send + 'static> FrugalNodeSt<Pa
         !self.is_live()
     }
 
-    #[inline(always)]
-    pub fn find(curr: FrugalNode<Payload>, version: Version, allow_tombstone: bool)
-                -> FrugalNodeLink<Payload>
-    {
-        AtomicFrugalList::find_from(curr, version, allow_tombstone)
-    }
+    // #[inline(always)]
+    // pub fn find(curr: FrugalNode<Payload>, version: Version, allow_tombstone: bool)
+    //             -> FrugalNodeLink<Payload>
+    // {
+    //     AtomicFrugalList::find_from(curr, version, allow_tombstone)
+    // }
 }
 
 pub struct FrugalVersionIterator<
-   Payload: Clone + Default + Display + Sync + Send + 'static>
+    Payload: Clone + Default + Display + Sync + Send + 'static>
 {
-    current: FrugalNodeLink<Payload>,
+    current: Option<(*mut FrugalNodeSt<Payload>, Version)>,
 }
 
 impl<Payload: Clone + Default + Display + Sync + Send + 'static>
 Iterator for FrugalVersionIterator<Payload> {
-    type Item = FrugalNode<Payload>;
+    type Item = (*mut FrugalNodeSt<Payload>, Version);
 
     fn next(&mut self) -> Option<Self::Item> {
-        loop { // skips tombstones; is that even desired?
-            match self.current.take() {
-                Some(curr) if curr.is_deleted() =>
-                    continue,
-                Some(curr) => {
-                    self.current = curr.next.clone();
-                    break Some(curr)
-                }
-                _ => break None
+        loop {
+            let (curr, version) = self.current?;
+            let curr_ref = unsafe { &*curr };
+            self.current = curr_ref
+                .next
+                .map(|n| (n, unsafe { (*n).insert_version }));
+            if curr_ref.is_deleted() {
+                continue;
             }
+            break Some((curr, version));
         }
     }
 }

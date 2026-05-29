@@ -10,7 +10,6 @@ use std::thread::{spawn, yield_now};
 use std::time::{Instant, SystemTime};
 use crossbeam_channel::{unbounded, Receiver, TryRecvError};
 use itertools::{Either, Itertools};
-
 use crate::mvb_crud_model::crud_api::CRUDDispatcher;
 use crate::mvb_crud_model::crud_operation::CRUDOperation;
 use crate::mvb_crud_model::crud_operation_result::CRUDOperationResult;
@@ -20,6 +19,7 @@ use crate::mvb_record_model::v_record_point::VersionIndexType;
 use crate::mvb_record_model::Version;
 use crate::mvb_tree::bplus_tree::{new_INDEX, MVBPlusTree};
 use crate::mvb_utils::crud_rate_limiter::{ThreadWorker, ThreadWorkerInfo};
+use crate::mvb_utils::interval::Interval;
 
 pub type MVBTree = MVBPlusTree<FAN_OUT, NUM_RECORDS, Key, Payload>;
 pub fn inc_key(k: Key) -> Key {
@@ -113,6 +113,14 @@ pub(crate) fn main_load(parms: Vec<String>) {
                 let _ = index.dispatch(i);
             });
 
+            fn debug_count(tree: &MVBTree) -> usize {
+                let (_, guards) = tree.traversal_read_range(&Interval::new(0, Key::MAX));
+                guards.iter()
+                    .map(|(_, g)| g.deref().unwrap().as_ref().as_records().len())
+                    .sum()
+            }
+            println!("Debug count Inserts init = {}. found = {}", init_keys, debug_count(&index));
+
             let oltp_threads = scans_per_thread;
             let slice = oltp.len() / oltp_threads;
 
@@ -198,6 +206,13 @@ pub(crate) fn main_load(parms: Vec<String>) {
             oltp_tx_buff.drain(0..init_keys).for_each(|i| {
                 let _ = index.dispatch(i);
             });
+            fn debug_count(tree: &MVBTree) -> usize {
+                let (_, guards) = tree.traversal_read_range(&Interval::new(0, Key::MAX));
+                guards.iter()
+                    .map(|(_, g)| g.deref().unwrap().as_ref().as_records().len())
+                    .sum()
+            }
+            println!("Debug count Inserts init = {}. found = {}", init_keys, debug_count(&index));
 
             let num = oltp_tx_buff.len();
             let start_oltp_time = Instant::now();
@@ -205,6 +220,9 @@ pub(crate) fn main_load(parms: Vec<String>) {
             oltp_tx_buff.into_iter().for_each(|crud| {
                 let _ = index.dispatch(crud);
             });
+
+            println!("ALL inserted: Debug count Inserts = {}. found = {}",
+                     init_keys + num, debug_count(&index));
 
             let oltp_total_time = start_oltp_time.elapsed().as_nanos();
 
@@ -593,7 +611,7 @@ pub(crate) fn main_load_cc_new(parms: Vec<String>) {
 const INSERT: u8 = 0;
 const UPDATE: u8 = 1;
 const DELETE: u8 = 2;
-fn load_query_into_memory(query_file: &str) -> Vec<CRUDOperation<Key, Payload>> {
+pub fn load_query_into_memory(query_file: &str) -> Vec<CRUDOperation<Key, Payload>> {
     let mut query_file = BufReader::new(OpenOptions::new()
         .read(true)
         .open(format!("{query_file}"))

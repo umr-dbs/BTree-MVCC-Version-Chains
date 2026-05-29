@@ -227,7 +227,7 @@ impl<E: Default> OptCell<E> {
         debug_assert!(pin_lock & PIN_FLAG_VERSION == PIN_FLAG_VERSION &&
             pin_lock & WRITE_OBSOLETE_FLAG_VERSION == 0);
 
-        self.cell_version.store(pin_lock ^ PIN_FLAG_VERSION, Relaxed)
+        self.cell_version.store(pin_lock ^ PIN_FLAG_VERSION, Release)
     }
 
     #[inline(always)]

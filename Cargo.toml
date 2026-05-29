@@ -16,6 +16,7 @@ overflow-checks = false
 
 [profile.release]
 overflow-checks = false
+debug = "line-tables-only"
 
 [features]
 olc-hle = []

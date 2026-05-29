@@ -64,7 +64,7 @@ pub enum VersionIndex<
     DexaBTree(ArcSwap<DexaBTree<Payload>>),
 }
 
-impl<Key: Hash + Ord + Copy + Default, 
+impl<Key: Hash + Ord + Copy + Default,
     Payload: Clone + Default + Display + Send + Sync + 'static> Clone for VersionIndex<Key, Payload> {
     fn clone(&self) -> Self {
         match self {

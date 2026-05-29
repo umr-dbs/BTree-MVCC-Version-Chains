@@ -24,7 +24,7 @@ impl<const FAN_OUT: usize,
     pub(crate) fn has_overflow(&self, node: &Node<FAN_OUT, NUM_RECORDS, Key, Payload>) -> bool {
         match node.is_leaf() {
             true => node.is_overflow(self.block_manager.allocation_leaf()),
-            false => node.is_overflow(self.block_manager.allocation_directory() - 2)
+            false => node.is_overflow(self.block_manager.allocation_directory() - 1)
         }
     }
 
@@ -306,18 +306,21 @@ impl<const FAN_OUT: usize,
                 };
 
                 if let SplitType::SplitAndFilter = split_type {
-                    let data = records
-                        .as_records()
-                        .iter()
-                        .filter(|r|
-                            r.is_live())
-                        .cloned()
-                        .collect::<Box<[_]>>();
-
-                    (records.record_data.as_mut_ptr() as *mut VersionedRecordPoint<_, _>)
-                        .copy_from_nonoverlapping(data.as_ptr(), data.len());
-
-                    records.set_len(data.len());
+                    let recs_ptr = records.record_data.as_mut_ptr() as *mut VersionedRecordPoint<Key, Payload>;
+                    let n = records.len();
+                    let mut write_idx = 0;
+                    for read_idx in 0..n {
+                        let read_ptr = recs_ptr.add(read_idx);
+                        if (*read_ptr).is_live() {
+                            if write_idx != read_idx {
+                                ptr::copy_nonoverlapping(read_ptr, recs_ptr.add(write_idx), 1);
+                            }
+                            write_idx += 1;
+                        } else {
+                            ptr::drop_in_place(read_ptr);
+                        }
+                    }
+                    records.set_len(write_idx);
                 };
 
                 let records_filtered = records.as_records();
@@ -788,18 +791,21 @@ impl<const FAN_OUT: usize,
                 };
 
                 if let SplitType::SplitAndFilter = split_type {
-                    let data = records
-                        .as_records()
-                        .iter()
-                        .filter(|r|
-                            r.is_live())
-                        .cloned()
-                        .collect::<Box<[_]>>();
-
-                    (records.record_data.as_mut_ptr() as *mut VersionedRecordPoint<_, _>)
-                        .copy_from_nonoverlapping(data.as_ptr(), data.len());
-
-                    records.set_len(data.len());
+                    let recs_ptr = records.record_data.as_mut_ptr() as *mut VersionedRecordPoint<Key, Payload>;
+                    let n = records.len();
+                    let mut write_idx = 0;
+                    for read_idx in 0..n {
+                        let read_ptr = recs_ptr.add(read_idx);
+                        if (*read_ptr).is_live() {
+                            if write_idx != read_idx {
+                                ptr::copy_nonoverlapping(read_ptr, recs_ptr.add(write_idx), 1);
+                            }
+                            write_idx += 1;
+                        } else {
+                            ptr::drop_in_place(read_ptr);
+                        }
+                    }
+                    records.set_len(write_idx);
                 };
 
                 let records_filtered = records.as_records();
