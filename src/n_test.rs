@@ -113,13 +113,13 @@ pub(crate) fn main_load(parms: Vec<String>) {
                 let _ = index.dispatch(i);
             });
 
-            fn debug_count(tree: &MVBTree) -> usize {
-                let (_, guards) = tree.traversal_read_range(&Interval::new(0, Key::MAX));
-                guards.iter()
-                    .map(|(_, g)| g.deref().unwrap().as_ref().as_records().len())
-                    .sum()
-            }
-            println!("Debug count Inserts init = {}. found = {}", init_keys, debug_count(&index));
+            // fn debug_count(tree: &MVBTree) -> usize {
+            //     let (_, guards) = tree.traversal_read_range(&Interval::new(0, Key::MAX));
+            //     guards.iter()
+            //         .map(|(_, g)| g.deref().unwrap().as_ref().as_records().len())
+            //         .sum()
+            // }
+            // println!("Debug count Inserts init = {}. found = {}", init_keys, debug_count(&index));
 
             let oltp_threads = scans_per_thread;
             let slice = oltp.len() / oltp_threads;
@@ -206,13 +206,13 @@ pub(crate) fn main_load(parms: Vec<String>) {
             oltp_tx_buff.drain(0..init_keys).for_each(|i| {
                 let _ = index.dispatch(i);
             });
-            fn debug_count(tree: &MVBTree) -> usize {
-                let (_, guards) = tree.traversal_read_range(&Interval::new(0, Key::MAX));
-                guards.iter()
-                    .map(|(_, g)| g.deref().unwrap().as_ref().as_records().len())
-                    .sum()
-            }
-            println!("Debug count Inserts init = {}. found = {}", init_keys, debug_count(&index));
+            // fn debug_count(tree: &MVBTree) -> usize {
+            //     let (_, guards) = tree.traversal_read_range(&Interval::new(0, Key::MAX));
+            //     guards.iter()
+            //         .map(|(_, g)| g.deref().unwrap().as_ref().as_records().len())
+            //         .sum()
+            // }
+            // println!("Debug count Inserts init = {}. found = {}", init_keys, debug_count(&index));
 
             let num = oltp_tx_buff.len();
             let start_oltp_time = Instant::now();
@@ -220,9 +220,9 @@ pub(crate) fn main_load(parms: Vec<String>) {
             oltp_tx_buff.into_iter().for_each(|crud| {
                 let _ = index.dispatch(crud);
             });
-
-            println!("ALL inserted: Debug count Inserts = {}. found = {}",
-                     init_keys + num, debug_count(&index));
+            //
+            // println!("ALL inserted: Debug count Inserts = {}. found = {}",
+            //          init_keys + num, debug_count(&index));
 
             let oltp_total_time = start_oltp_time.elapsed().as_nanos();
 

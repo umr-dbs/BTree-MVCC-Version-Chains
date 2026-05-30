@@ -15,8 +15,18 @@ repository = "https://github.com/umr-dbs/MVBTree"
 overflow-checks = false
 
 [profile.release]
-overflow-checks = false
 debug = "line-tables-only"
+overflow-checks = false
+#opt-level = 3            # maximum LLVM optimizations
+#lto = "fat"              # full link-time optimization (cross-crate)
+#codegen-units = 1        # better optimization, slower compile
+#panic = "abort"          # removes unwinding overhead
+#strip = true             # smaller binary (optional)
+#debug = 0                # no debug info
+#incremental = false      # better optimization consistency
+
+[build]
+rustflags = ["-C", "target-cpu=native"]
 
 [features]
 olc-hle = []
